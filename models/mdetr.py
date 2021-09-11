@@ -449,9 +449,10 @@ class SetCriterion(nn.Module):
                                     dtype=torch.int64, device=src_logits.device)
         target_classes[idx] = target_classes_o
 
-        torch.use_deterministic_algorithms(False)
+        torch.set_deterministic(False)
         loss_ce = F.cross_entropy(src_logits.transpose(1, 2), target_classes, self.empty_weight)
-        torch.use_deterministic_algorithms(True)
+        torch.set_deterministic(True)
+
         losses = {'loss_ce': loss_ce}
 
         # TODO this should probably be a separate loss, not hacked in this one here
