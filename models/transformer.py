@@ -14,7 +14,6 @@ from typing import List, Optional
 import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
-from transformers import RobertaModel, RobertaTokenizerFast
 
 
 class Transformer(nn.Module):
@@ -51,23 +50,7 @@ class Transformer(nn.Module):
 
         self._reset_parameters()
 
-        self.tokenizer = RobertaTokenizerFast.from_pretrained(text_encoder_type)
-        self.text_encoder = RobertaModel.from_pretrained(text_encoder_type)
-
-        if freeze_text_encoder:
-            for p in self.text_encoder.parameters():
-                p.requires_grad_(False)
-
-        self.expander_dropout = 0.1
-        config = self.text_encoder.config
-        self.resizer = FeatureResizer(
-            input_feat_size=config.hidden_size,
-            output_feat_size=d_model,
-            dropout=self.expander_dropout,
-        )
-
         self.d_model = d_model
-        self.nhead = nhead
 
     def _reset_parameters(self):
         for p in self.parameters():
@@ -110,8 +93,6 @@ class Transformer(nn.Module):
                 tgt = torch.zeros_like(query_embed)
             else:
                 src, tgt, query_embed, pos_embed = src + 0.1 * pos_embed, query_embed, None, None
-
-            device = src.device
 
             img_memory = self.encoder(src, src_key_padding_mask=mask, pos=pos_embed)
 
