@@ -80,11 +80,8 @@ class Transformer(nn.Module):
         mask=None,
         query_embed=None,
         pos_embed=None,
-        text=None,
         encode_and_save=True,
-        text_memory=None,
         img_memory=None,
-        text_attention_mask=None,
     ):
         if encode_and_save:
             # flatten NxCxHxW to HWxNxC
@@ -115,45 +112,15 @@ class Transformer(nn.Module):
                 src, tgt, query_embed, pos_embed = src + 0.1 * pos_embed, query_embed, None, None
 
             device = src.device
-            if isinstance(text[0], str):
-                # Encode the text
-                tokenized = self.tokenizer.batch_encode_plus(text, padding="longest", return_tensors="pt").to(device)
-                encoded_text = self.text_encoder(**tokenized)
-
-                # Transpose memory because pytorch's attention expects sequence first
-                text_memory = encoded_text.last_hidden_state.transpose(0, 1)
-                # Invert attention mask that we get from huggingface because its the opposite in pytorch transformer
-                text_attention_mask = tokenized.attention_mask.ne(1).bool()
-
-                # Resize the encoder hidden states to be of the same d_model as the decoder
-                text_memory_resized = self.resizer(text_memory)
-            else:
-                # The text is already encoded, use as is.
-                text_attention_mask, text_memory_resized, tokenized = text
-
-            # Concat on the sequence dimension
-            src = torch.cat([src, text_memory_resized], dim=0)
-            # For mask, sequence dimension is second
-            mask = torch.cat([mask, text_attention_mask], dim=1)
-            # Pad the pos_embed with 0 so that the addition will be a no-op for the text tokens
-            pos_embed = torch.cat([pos_embed, torch.zeros_like(text_memory_resized)], dim=0)
 
             img_memory = self.encoder(src, src_key_padding_mask=mask, pos=pos_embed)
 
-            text_memory = img_memory[-len(text_memory_resized) :]
-
-            assert img_memory.shape[1] == text_memory.shape[1] == tgt.shape[1]
             memory_cache = {
-                "text_memory_resized": text_memory_resized,
-                "text_memory": text_memory,
                 "img_memory": img_memory,
-                "text_pooled_op": encoded_text.pooler_output if self.CLS is not None else None,
                 "img_pooled_op": img_memory[0] if self.CLS is not None else None,  # Return the CLS token
                 "mask": mask,
-                "text_attention_mask": text_attention_mask,
                 "pos_embed": pos_embed,
                 "query_embed": query_embed,
-                "tokenized": tokenized,
             }
             return memory_cache
 
@@ -163,14 +130,10 @@ class Transformer(nn.Module):
             else:
                 src, tgt, query_embed, pos_embed = src + 0.1 * pos_embed, query_embed, None, None
 
-            assert img_memory.shape[1] == text_memory.shape[1] == tgt.shape[1]
-
             hs = self.decoder(
                 tgt,
                 img_memory,
-                text_memory,
                 memory_key_padding_mask=mask,
-                text_memory_key_padding_mask=text_attention_mask,
                 pos=pos_embed,
                 query_pos=query_embed,
             )
@@ -215,10 +178,8 @@ class TransformerDecoder(nn.Module):
         self,
         tgt,
         memory,
-        text_memory,
         tgt_mask: Optional[Tensor] = None,
         memory_mask: Optional[Tensor] = None,
-        text_memory_key_padding_mask: Optional[Tensor] = None,
         tgt_key_padding_mask: Optional[Tensor] = None,
         memory_key_padding_mask: Optional[Tensor] = None,
         pos: Optional[Tensor] = None,
@@ -232,10 +193,8 @@ class TransformerDecoder(nn.Module):
             output = layer(
                 output,
                 memory,
-                text_memory=text_memory,
                 tgt_mask=tgt_mask,
                 memory_mask=memory_mask,
-                text_memory_key_padding_mask=text_memory_key_padding_mask,
                 tgt_key_padding_mask=tgt_key_padding_mask,
                 memory_key_padding_mask=memory_key_padding_mask,
                 pos=pos,
@@ -352,10 +311,8 @@ class TransformerDecoderLayer(nn.Module):
         self,
         tgt,
         memory,
-        text_memory,
         tgt_mask: Optional[Tensor] = None,
         memory_mask: Optional[Tensor] = None,
-        text_memory_key_padding_mask: Optional[Tensor] = None,
         tgt_key_padding_mask: Optional[Tensor] = None,
         memory_key_padding_mask: Optional[Tensor] = None,
         pos: Optional[Tensor] = None,
@@ -432,10 +389,8 @@ class TransformerDecoderLayer(nn.Module):
         self,
         tgt,
         memory,
-        text_memory,
         tgt_mask: Optional[Tensor] = None,
         memory_mask: Optional[Tensor] = None,
-        text_memory_key_padding_mask: Optional[Tensor] = None,
         tgt_key_padding_mask: Optional[Tensor] = None,
         memory_key_padding_mask: Optional[Tensor] = None,
         pos: Optional[Tensor] = None,
@@ -448,10 +403,8 @@ class TransformerDecoderLayer(nn.Module):
         return self.forward_post(
             tgt,
             memory,
-            text_memory,
             tgt_mask,
             memory_mask,
-            text_memory_key_padding_mask,
             tgt_key_padding_mask,
             memory_key_padding_mask,
             pos,

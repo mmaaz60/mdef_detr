@@ -31,6 +31,7 @@ import ssl
 ssl._create_default_https_context = ssl._create_unverified_context
 
 os.environ['CUBLAS_WORKSPACE_CONFIG'] = ':4096:8'
+os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
 
 
 def get_args_parser():
