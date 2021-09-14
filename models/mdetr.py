@@ -77,10 +77,6 @@ class MDETR(nn.Module):
             self.contrastive_projection_text = nn.Linear(
                 self.transformer.text_encoder.config.hidden_size, contrastive_hdim, bias=False
             )
-        self.contrastive_align_loss = contrastive_align_loss
-        if contrastive_align_loss:
-            self.contrastive_align_projection_image = nn.Linear(hidden_dim, contrastive_hdim)
-            self.contrastive_align_projection_text = nn.Linear(hidden_dim, contrastive_hdim)
 
         self.qa_dataset = qa_dataset
         self.split_qa_heads = split_qa_heads

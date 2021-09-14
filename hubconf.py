@@ -46,7 +46,7 @@ def _make_detr(
     detr = MDETR(
         backbone,
         transformer,
-        num_classes=255,
+        num_classes=1,
         num_queries=num_queries,
         qa_dataset=qa_dataset,
         predict_final=predict_final,
