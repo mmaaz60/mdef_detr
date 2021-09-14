@@ -58,7 +58,7 @@ def _make_detr(
     return detr
 
 
-def mdetr_swin(backbone_name="swin_S", pretrained=False, return_postprocessor=False, checkpoints_path=""):
+def detr_swin(backbone_name="swin_S", pretrained=False, return_postprocessor=False, checkpoints_path=""):
     """
     MDETR R101 with 6 encoder and 6 decoder layers.
     Pretrained on our combined aligned dataset of 1.3 million images paired with text.
@@ -80,7 +80,7 @@ def mdetr_swin(backbone_name="swin_S", pretrained=False, return_postprocessor=Fa
     return model
 
 
-def mdetr_resnet101(pretrained=False, return_postprocessor=False):
+def detr_resnet101(pretrained=False, return_postprocessor=False, checkpoints_path=""):
     """
     MDETR R101 with 6 encoder and 6 decoder layers.
     Pretrained on our combined aligned dataset of 1.3 million images paired with text.
@@ -94,12 +94,15 @@ def mdetr_resnet101(pretrained=False, return_postprocessor=False):
             check_hash=True,
         )
         model.load_state_dict(checkpoint["model"])
+    elif checkpoints_path:
+        checkpoint = torch.load(checkpoints_path, map_location="cpu")
+        model.load_state_dict(checkpoint["model"])
     if return_postprocessor:
         return model, PostProcess()
     return model
 
 
-def mdetr_efficientnetB3(pretrained=False, return_postprocessor=False):
+def detr_efficientnetB3(pretrained=False, return_postprocessor=False, checkpoints_path=""):
     """
     MDETR ENB3 with 6 encoder and 6 decoder layers.
     Pretrained on our combined aligned dataset of 1.3 million images paired with text.
@@ -113,12 +116,15 @@ def mdetr_efficientnetB3(pretrained=False, return_postprocessor=False):
             check_hash=True,
         )
         model.load_state_dict(checkpoint["model"])
+    elif checkpoints_path:
+        checkpoint = torch.load(checkpoints_path, map_location="cpu")
+        model.load_state_dict(checkpoint["model"])
     if return_postprocessor:
         return model, PostProcess()
     return model
 
 
-def mdetr_efficientnetB5(pretrained=False, return_postprocessor=False):
+def detr_efficientnetB5(pretrained=False, return_postprocessor=False, checkpoints_path=""):
     """
     MDETR ENB5 with 6 encoder and 6 decoder layers.
     Pretrained on our combined aligned dataset of 1.3 million images paired with text.
@@ -131,6 +137,9 @@ def mdetr_efficientnetB5(pretrained=False, return_postprocessor=False):
             map_location="cpu",
             check_hash=True,
         )
+        model.load_state_dict(checkpoint["model"])
+    elif checkpoints_path:
+        checkpoint = torch.load(checkpoints_path, map_location="cpu")
         model.load_state_dict(checkpoint["model"])
     if return_postprocessor:
         return model, PostProcess()
