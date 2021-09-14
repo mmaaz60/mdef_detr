@@ -191,19 +191,14 @@ class MDETR(nn.Module):
                 outputs_isfinal = self.isfinal_embed(hs)
                 out["pred_isfinal"] = outputs_isfinal[-1]
             proj_queries, proj_tokens = None, None
-            if self.contrastive_align_loss:
-                raise NotImplementedError
             if self.aux_loss:
-                if self.contrastive_align_loss:
-                    raise NotImplementedError
-                else:
-                    out["aux_outputs"] = [
-                        {
-                            "pred_logits": a,
-                            "pred_boxes": b,
-                        }
-                        for a, b in zip(outputs_class[:-1], outputs_coord[:-1])
-                    ]
+                out["aux_outputs"] = [
+                    {
+                        "pred_logits": a,
+                        "pred_boxes": b,
+                    }
+                    for a, b in zip(outputs_class[:-1], outputs_coord[:-1])
+                ]
                 if outputs_isfinal is not None:
                     assert len(outputs_isfinal[:-1]) == len(out["aux_outputs"])
                     for i in range(len(outputs_isfinal[:-1])):
