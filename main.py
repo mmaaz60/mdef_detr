@@ -194,6 +194,13 @@ def get_args_parser():
         help="Disables passing the positional encodings to each attention layers",
     )
 
+    # Transformer: deformable detr
+    parser.add_argument('--transformer', default="DETR", type=str, help='Type of transformer (DETR, Deformable-DETR')
+    parser.add_argument('--num_feature_levels', default=1, type=int, help='number of feature levels')
+    parser.add_argument('--dec_n_points', default=4, type=int)
+    parser.add_argument('--enc_n_points', default=4, type=int)
+    parser.add_argument('--two_stage', default=False, action='store_true')
+
     # Segmentation
     parser.add_argument(
         "--mask_model",

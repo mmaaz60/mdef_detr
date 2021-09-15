@@ -20,6 +20,7 @@ from .matcher import build_matcher
 from .postprocessors import build_postprocessors
 from .segmentation import DETRsegm, dice_loss, sigmoid_focal_loss
 from .transformer import build_transformer
+from .deformable_transformer import build_deforamble_transformer
 
 
 class MDETR(nn.Module):
@@ -148,13 +149,25 @@ class MDETR(nn.Module):
 
         else:
             assert memory_cache is not None
-            hs = self.transformer(
-                mask=memory_cache["mask"],
-                query_embed=memory_cache["query_embed"],
-                pos_embed=memory_cache["pos_embed"],
-                encode_and_save=False,
-                img_memory=memory_cache["img_memory"],
-            )
+            if self.transformer._get_name() == 'DeformableTransformer':
+                hs = self.transformer(
+                    mask=memory_cache["mask"],
+                    query_embed=memory_cache["query_embed"],
+                    pos_embed=memory_cache["pos_embed"],
+                    encode_and_save=False,
+                    img_memory=memory_cache["img_memory"],
+                    spatial_shapes=memory_cache["spatial_shapes"],
+                    level_start_index=memory_cache["level_start_index"],
+                    valid_ratios=memory_cache["valid_ratios"],
+                )
+            else:
+                hs = self.transformer(
+                    mask=memory_cache["mask"],
+                    query_embed=memory_cache["query_embed"],
+                    pos_embed=memory_cache["pos_embed"],
+                    encode_and_save=False,
+                    img_memory=memory_cache["img_memory"],
+                )
             out = {}
             if self.qa_dataset is not None:
                 if self.split_qa_heads:
@@ -632,7 +645,10 @@ def build(args):
 
     backbone = build_backbone(args)
 
-    transformer = build_transformer(args)
+    if args.transformer == "Deformable-DETR":
+        transformer = build_deforamble_transformer(args)
+    else:
+        transformer = build_transformer(args)
 
     model = MDETR(
         backbone,
