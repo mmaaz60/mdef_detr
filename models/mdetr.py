@@ -78,10 +78,6 @@ class MDETR(nn.Module):
             self.contrastive_projection_text = nn.Linear(
                 self.transformer.text_encoder.config.hidden_size, contrastive_hdim, bias=False
             )
-        self.contrastive_align_loss = contrastive_align_loss
-        if contrastive_align_loss:
-            self.contrastive_align_projection_image = nn.Linear(hidden_dim, contrastive_hdim)
-            self.contrastive_align_projection_text = nn.Linear(hidden_dim, contrastive_hdim)
 
         self.qa_dataset = qa_dataset
         self.split_qa_heads = split_qa_heads
@@ -111,7 +107,6 @@ class MDETR(nn.Module):
         """The forward expects a NestedTensor, which consists of:
            - samples.tensor: batched images, of shape [batch_size x 3 x H x W]
            - samples.mask: a binary mask of shape [batch_size x H x W], containing 1 on padded pixels
-
         It returns a dict with the following elements:
            - "pred_logits": the classification logits (including no-object) for all queries.
                             Shape= [batch_size x num_queries x (num_classes + 1)]
@@ -208,19 +203,14 @@ class MDETR(nn.Module):
                 outputs_isfinal = self.isfinal_embed(hs)
                 out["pred_isfinal"] = outputs_isfinal[-1]
             proj_queries, proj_tokens = None, None
-            if self.contrastive_align_loss:
-                raise NotImplementedError
             if self.aux_loss:
-                if self.contrastive_align_loss:
-                    raise NotImplementedError
-                else:
-                    out["aux_outputs"] = [
-                        {
-                            "pred_logits": a,
-                            "pred_boxes": b,
-                        }
-                        for a, b in zip(outputs_class[:-1], outputs_coord[:-1])
-                    ]
+                out["aux_outputs"] = [
+                    {
+                        "pred_logits": a,
+                        "pred_boxes": b,
+                    }
+                    for a, b in zip(outputs_class[:-1], outputs_coord[:-1])
+                ]
                 if outputs_isfinal is not None:
                     assert len(outputs_isfinal[:-1]) == len(out["aux_outputs"])
                     for i in range(len(outputs_isfinal[:-1])):
@@ -462,9 +452,10 @@ class SetCriterion(nn.Module):
                                     dtype=torch.int64, device=src_logits.device)
         target_classes[idx] = target_classes_o
 
-        torch.use_deterministic_algorithms(False)
+        torch.set_deterministic(False)
         loss_ce = F.cross_entropy(src_logits.transpose(1, 2), target_classes, self.empty_weight)
-        torch.use_deterministic_algorithms(True)
+        torch.set_deterministic(True)
+
         losses = {'loss_ce': loss_ce}
 
         # TODO this should probably be a separate loss, not hacked in this one here
