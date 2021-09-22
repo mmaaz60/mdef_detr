@@ -63,11 +63,6 @@ class DeformableTransformer(nn.Module):
         self.CLS = nn.Embedding(1, d_model) if contrastive_loss else None
 
         self.expander_dropout = 0.1
-        self.resizer = FeatureResizer(
-            input_feat_size=config.hidden_size,
-            output_feat_size=d_model,
-            dropout=self.expander_dropout,
-        )
 
     def _reset_parameters(self):
         for p in self.parameters():
