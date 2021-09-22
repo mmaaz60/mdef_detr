@@ -29,8 +29,6 @@ class DeformableTransformer(nn.Module):
                  num_feature_levels=4, dec_n_points=4,  enc_n_points=4,
                  two_stage=False, two_stage_num_proposals=300,
                  pass_pos_and_query=True,
-                 text_encoder_type="roberta-base",
-                 freeze_text_encoder=False,
                  contrastive_loss=False,
                  ):
         super().__init__()
@@ -63,15 +61,8 @@ class DeformableTransformer(nn.Module):
 
         self.pass_pos_and_query = pass_pos_and_query
         self.CLS = nn.Embedding(1, d_model) if contrastive_loss else None
-        self.tokenizer = RobertaTokenizerFast.from_pretrained(text_encoder_type)
-        self.text_encoder = RobertaModel.from_pretrained(text_encoder_type)
-
-        if freeze_text_encoder:
-            for p in self.text_encoder.parameters():
-                p.requires_grad_(False)
 
         self.expander_dropout = 0.1
-        config = self.text_encoder.config
         self.resizer = FeatureResizer(
             input_feat_size=config.hidden_size,
             output_feat_size=d_model,
