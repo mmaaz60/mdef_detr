@@ -7,6 +7,7 @@ from models.position_encoding import PositionEmbeddingSine
 from models.postprocessors import PostProcess, PostProcessSegm
 from models.segmentation import DETRsegm
 from models.transformer import Transformer
+from models.deformable_transformer import DeformableTransformer
 
 dependencies = ["torch", "torchvision"]
 
@@ -56,6 +57,55 @@ def _make_detr(
     if mask:
         return DETRsegm(detr)
     return detr
+
+
+def _make_deformabledetr(
+        backbone_name: str,
+        num_queries=100,
+        mask=False,
+        qa_dataset=None,
+        predict_final=False,
+        contrastive_align_loss=True,
+):
+    hidden_dim = 256
+    backbone = _make_backbone(backbone_name, mask)
+    transformer = DeformableTransformer(d_model=hidden_dim, return_intermediate_dec=True, num_feature_levels=1,
+                                        dim_feedforward=2048, two_stage_num_proposals=100)
+    detr = MDETR(
+        backbone,
+        transformer,
+        num_classes=255,
+        num_queries=num_queries,
+        qa_dataset=qa_dataset,
+        predict_final=predict_final,
+        contrastive_align_loss=contrastive_align_loss,
+        contrastive_hdim=64,
+    )
+    if mask:
+        return DETRsegm(detr)
+    return detr
+
+
+def mdeformable_detr(pretrained=False, return_postprocessor=False, checkpoints_path=""):
+    """
+    MDETR R101 with 6 encoder and 6 decoder layers.
+    Pretrained on our combined aligned dataset of 1.3 million images paired with text.
+    """
+
+    model = _make_deformabledetr("resnet101")
+    if pretrained:
+        checkpoint = torch.hub.load_state_dict_from_url(
+            url="",
+            map_location="cpu",
+            check_hash=True,
+        )
+        model.load_state_dict(checkpoint["model"])
+    elif checkpoints_path:
+        checkpoint = torch.load(checkpoints_path, map_location="cpu")
+        model.load_state_dict(checkpoint["model"])
+    if return_postprocessor:
+        return model, PostProcess()
+    return model
 
 
 def mdetr_swin(backbone_name="swin_S", pretrained=False, return_postprocessor=False, checkpoints_path=""):
