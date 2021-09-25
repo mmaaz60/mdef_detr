@@ -27,18 +27,18 @@ class MDETR(nn.Module):
     """ This is the MDETR module that performs modulated object detection """
 
     def __init__(
-        self,
-        backbone,
-        transformer,
-        num_classes,
-        num_queries,
-        aux_loss=False,
-        contrastive_hdim=64,
-        contrastive_loss=False,
-        contrastive_align_loss=False,
-        qa_dataset: Optional[str] = None,
-        split_qa_heads=True,
-        predict_final=False,
+            self,
+            backbone,
+            transformer,
+            num_classes,
+            num_queries,
+            aux_loss=False,
+            contrastive_hdim=64,
+            contrastive_loss=False,
+            contrastive_align_loss=False,
+            qa_dataset: Optional[str] = None,
+            split_qa_heads=True,
+            predict_final=False,
     ):
         """Initializes the model.
 
@@ -224,7 +224,6 @@ class ContrastiveCriterion(nn.Module):
         self.temperature = temperature
 
     def forward(self, pooled_text, pooled_image):
-
         normalized_text_emb = F.normalize(pooled_text, p=2, dim=1)
         normalized_img_emb = F.normalize(pooled_image, p=2, dim=1)
 
@@ -265,10 +264,10 @@ class QACriterionGQA(nn.Module):
         ## OBJ type
         obj_norm = is_obj.sum() if is_obj.any() else 1.0
         loss["loss_answer_obj"] = (
-            F.cross_entropy(output["pred_answer_obj"], answers["answer_obj"], reduction="none")
-            .masked_fill(~is_obj, 0)
-            .sum()
-            / obj_norm
+                F.cross_entropy(output["pred_answer_obj"], answers["answer_obj"], reduction="none")
+                .masked_fill(~is_obj, 0)
+                .sum()
+                / obj_norm
         )
         obj_acc = (output["pred_answer_obj"].argmax(-1)) == answers["answer_obj"]
         loss["accuracy_answer_obj"] = (
@@ -278,10 +277,10 @@ class QACriterionGQA(nn.Module):
         ## ATTR type
         attr_norm = is_attr.sum() if is_attr.any() else 1.0
         loss["loss_answer_attr"] = (
-            F.cross_entropy(output["pred_answer_attr"], answers["answer_attr"], reduction="none")
-            .masked_fill(~is_attr, 0)
-            .sum()
-            / attr_norm
+                F.cross_entropy(output["pred_answer_attr"], answers["answer_attr"], reduction="none")
+                .masked_fill(~is_attr, 0)
+                .sum()
+                / attr_norm
         )
         attr_acc = (output["pred_answer_attr"].argmax(-1)) == answers["answer_attr"]
         loss["accuracy_answer_attr"] = (
@@ -291,10 +290,10 @@ class QACriterionGQA(nn.Module):
         ## REL type
         rel_norm = is_rel.sum() if is_rel.any() else 1.0
         loss["loss_answer_rel"] = (
-            F.cross_entropy(output["pred_answer_rel"], answers["answer_rel"], reduction="none")
-            .masked_fill(~is_rel, 0)
-            .sum()
-            / rel_norm
+                F.cross_entropy(output["pred_answer_rel"], answers["answer_rel"], reduction="none")
+                .masked_fill(~is_rel, 0)
+                .sum()
+                / rel_norm
         )
         rel_acc = (output["pred_answer_rel"].argmax(-1)) == answers["answer_rel"]
         loss["accuracy_answer_rel"] = (
@@ -304,10 +303,10 @@ class QACriterionGQA(nn.Module):
         ## GLOBAL type
         global_norm = is_global.sum() if is_global.any() else 1.0
         loss["loss_answer_global"] = (
-            F.cross_entropy(output["pred_answer_global"], answers["answer_global"], reduction="none")
-            .masked_fill(~is_global, 0)
-            .sum()
-            / global_norm
+                F.cross_entropy(output["pred_answer_global"], answers["answer_global"], reduction="none")
+                .masked_fill(~is_global, 0)
+                .sum()
+                / global_norm
         )
         global_acc = (output["pred_answer_global"].argmax(-1)) == answers["answer_global"]
         loss["accuracy_answer_global"] = (
@@ -317,10 +316,10 @@ class QACriterionGQA(nn.Module):
         ## CAT type
         cat_norm = is_cat.sum() if is_cat.any() else 1.0
         loss["loss_answer_cat"] = (
-            F.cross_entropy(output["pred_answer_cat"], answers["answer_cat"], reduction="none")
-            .masked_fill(~is_cat, 0)
-            .sum()
-            / cat_norm
+                F.cross_entropy(output["pred_answer_cat"], answers["answer_cat"], reduction="none")
+                .masked_fill(~is_cat, 0)
+                .sum()
+                / cat_norm
         )
         cat_acc = (output["pred_answer_cat"].argmax(-1)) == answers["answer_cat"]
         loss["accuracy_answer_cat"] = (
@@ -328,9 +327,10 @@ class QACriterionGQA(nn.Module):
         )
 
         loss["accuracy_answer_total"] = (
-            type_acc
-            * (is_obj * obj_acc + is_rel * rel_acc + is_attr * attr_acc + is_global * global_acc + is_cat * cat_acc)
-        ).sum() / type_acc.numel()
+                                                type_acc
+                                                * (
+                                                            is_obj * obj_acc + is_rel * rel_acc + is_attr * attr_acc + is_global * global_acc + is_cat * cat_acc)
+                                        ).sum() / type_acc.numel()
 
         return loss
 
@@ -352,10 +352,11 @@ class QACriterionClevr(nn.Module):
 
         binary_norm = is_binary.sum() if is_binary.any() else 1.0
         loss["loss_answer_binary"] = (
-            F.binary_cross_entropy_with_logits(output["pred_answer_binary"], answers["answer_binary"], reduction="none")
-            .masked_fill(~is_binary, 0)
-            .sum()
-            / binary_norm
+                F.binary_cross_entropy_with_logits(output["pred_answer_binary"], answers["answer_binary"],
+                                                   reduction="none")
+                .masked_fill(~is_binary, 0)
+                .sum()
+                / binary_norm
         )
         bin_acc = (output["pred_answer_binary"].sigmoid() > 0.5) == answers["answer_binary"]
         loss["accuracy_answer_binary"] = (
@@ -364,20 +365,20 @@ class QACriterionClevr(nn.Module):
 
         reg_norm = is_reg.sum() if is_reg.any() else 1.0
         loss["loss_answer_reg"] = (
-            F.cross_entropy(output["pred_answer_reg"], answers["answer_reg"], reduction="none")
-            .masked_fill(~is_reg, 0)
-            .sum()
-            / reg_norm
+                F.cross_entropy(output["pred_answer_reg"], answers["answer_reg"], reduction="none")
+                .masked_fill(~is_reg, 0)
+                .sum()
+                / reg_norm
         )
         reg_acc = (output["pred_answer_reg"].argmax(-1)) == answers["answer_reg"]
         loss["accuracy_answer_reg"] = reg_acc[is_reg].sum() / is_reg.sum() if is_reg.any() else torch.as_tensor(1.0)
 
         attr_norm = is_attr.sum() if is_attr.any() else 1.0
         loss["loss_answer_attr"] = (
-            F.cross_entropy(output["pred_answer_attr"], answers["answer_attr"], reduction="none")
-            .masked_fill(~is_attr, 0)
-            .sum()
-            / attr_norm
+                F.cross_entropy(output["pred_answer_attr"], answers["answer_attr"], reduction="none")
+                .masked_fill(~is_attr, 0)
+                .sum()
+                / attr_norm
         )
         attr_acc = (output["pred_answer_attr"].argmax(-1)) == answers["answer_attr"]
         loss["accuracy_answer_attr"] = (
@@ -385,8 +386,8 @@ class QACriterionClevr(nn.Module):
         )
 
         loss["accuracy_answer_total"] = (
-            type_acc * (is_binary * bin_acc + is_reg * reg_acc + is_attr * attr_acc)
-        ).sum() / type_acc.numel()
+                                                type_acc * (is_binary * bin_acc + is_reg * reg_acc + is_attr * attr_acc)
+                                        ).sum() / type_acc.numel()
 
         return loss
 
@@ -398,7 +399,7 @@ class SetCriterion(nn.Module):
         2) we supervise each pair of matched ground-truth / prediction (supervise class and box)
     """
 
-    def __init__(self, num_classes, matcher, eos_coef, losses, temperature):
+    def __init__(self, num_classes, matcher, eos_coef, losses, temperature, focal_alpha=0.25):
         """Create the criterion.
         Parameters:
             num_classes: number of object categories, omitting the special no-object category
@@ -415,6 +416,7 @@ class SetCriterion(nn.Module):
         empty_weight = torch.ones(self.num_classes + 1)
         empty_weight[-1] = self.eos_coef
         self.register_buffer("empty_weight", empty_weight)
+        self.focal_alpha = focal_alpha
 
     def loss_isfinal(self, outputs, targets, indices, num_boxes):
         """This loss is used in some referring expression dataset (specifically Clevr-REF+)
@@ -452,10 +454,13 @@ class SetCriterion(nn.Module):
                                     dtype=torch.int64, device=src_logits.device)
         target_classes[idx] = target_classes_o
 
-        torch.set_deterministic(False)
-        loss_ce = F.cross_entropy(src_logits.transpose(1, 2), target_classes, self.empty_weight)
-        torch.set_deterministic(True)
+        target_classes_onehot = torch.zeros([src_logits.shape[0], src_logits.shape[1], src_logits.shape[2] + 1],
+                                            dtype=src_logits.dtype, layout=src_logits.layout, device=src_logits.device)
+        target_classes_onehot.scatter_(2, target_classes.unsqueeze(-1), 1)
 
+        target_classes_onehot = target_classes_onehot[:, :, :-1]
+        loss_ce = sigmoid_focal_loss(src_logits, target_classes_onehot, num_boxes, alpha=self.focal_alpha, gamma=2) * \
+                  src_logits.shape[1]
         losses = {'loss_ce': loss_ce}
 
         # TODO this should probably be a separate loss, not hacked in this one here
@@ -624,13 +629,13 @@ def build(args):
     qa_dataset = None
     if args.do_qa:
         assert not (
-            ("clevr" in args.combine_datasets or "clevr_question" in args.combine_datasets)
-            and "gqa" in args.combine_datasets
+                ("clevr" in args.combine_datasets or "clevr_question" in args.combine_datasets)
+                and "gqa" in args.combine_datasets
         ), "training GQA and CLEVR simultaneously is not supported"
         assert (
-            "clevr_question" in args.combine_datasets
-            or "clevr" in args.combine_datasets
-            or "gqa" in args.combine_datasets
+                "clevr_question" in args.combine_datasets
+                or "clevr" in args.combine_datasets
+                or "gqa" in args.combine_datasets
         ), "Question answering require either gqa or clevr dataset"
         qa_dataset = "gqa" if "gqa" in args.combine_datasets else "clevr"
 
