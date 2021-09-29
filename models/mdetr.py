@@ -13,7 +13,7 @@ from torch import nn
 import util.dist as dist
 from util import box_ops
 from util.metrics import accuracy
-from util.misc import NestedTensor, interpolate
+from util.misc import NestedTensor, interpolate, inverse_sigmoid
 
 from .backbone import build_backbone
 from .matcher import build_matcher
@@ -21,6 +21,11 @@ from .postprocessors import build_postprocessors
 from .segmentation import DETRsegm, dice_loss, sigmoid_focal_loss
 from .transformer import build_transformer
 from .deformable_transformer import build_deforamble_transformer
+import copy
+
+
+def _get_clones(module, N):
+    return nn.ModuleList([copy.deepcopy(module) for i in range(N)])
 
 
 class MDETR(nn.Module):
@@ -32,6 +37,9 @@ class MDETR(nn.Module):
             transformer,
             num_classes,
             num_queries,
+            num_feature_levels,
+            with_box_refine=False,
+            two_stage=False,
             aux_loss=False,
             contrastive_hdim=64,
             contrastive_loss=False,
@@ -65,14 +73,50 @@ class MDETR(nn.Module):
         self.isfinal_embed = nn.Linear(hidden_dim, 1) if predict_final else None
         self.bbox_embed = MLP(hidden_dim, hidden_dim, 4, 3)
         self.query_embed = nn.Embedding(num_queries, 2*hidden_dim)
+        self.num_feature_levels = num_feature_levels
         if qa_dataset is not None:
             nb_heads = 6 if qa_dataset == "gqa" else 4
             self.qa_embed = nn.Embedding(nb_heads if split_qa_heads else 1, hidden_dim)
 
-        self.input_proj = nn.Conv2d(backbone.num_channels, hidden_dim, kernel_size=1)
+        if num_feature_levels > 1:
+            num_backbone_outs = len(backbone.strides)
+            input_proj_list = []
+            for _ in range(num_backbone_outs):
+                in_channels = backbone.num_channels[_]
+                input_proj_list.append(nn.Sequential(
+                    nn.Conv2d(in_channels, hidden_dim, kernel_size=1),
+                    nn.GroupNorm(32, hidden_dim),
+                ))
+            for _ in range(num_feature_levels - num_backbone_outs):
+                input_proj_list.append(nn.Sequential(
+                    nn.Conv2d(in_channels, hidden_dim, kernel_size=3, stride=2, padding=1),
+                    nn.GroupNorm(32, hidden_dim),
+                ))
+                in_channels = hidden_dim
+            self.input_proj = nn.ModuleList(input_proj_list)
+        else:
+            self.input_proj = nn.ModuleList([
+                nn.Sequential(
+                    nn.Conv2d(backbone.num_channels[0], hidden_dim, kernel_size=1),
+                    nn.GroupNorm(32, hidden_dim),
+                )])
         self.backbone = backbone
         self.aux_loss = aux_loss
         self.contrastive_loss = contrastive_loss
+
+        num_pred = (transformer.decoder.num_layers + 1) if two_stage else transformer.decoder.num_layers
+        if with_box_refine:
+            self.class_embed = _get_clones(self.class_embed, num_pred)
+            self.bbox_embed = _get_clones(self.bbox_embed, num_pred)
+            nn.init.constant_(self.bbox_embed[0].layers[-1].bias.data[2:], -2.0)
+            # hack implementation for iterative bounding box refinement
+            self.transformer.decoder.bbox_embed = self.bbox_embed
+        else:
+            nn.init.constant_(self.bbox_embed.layers[-1].bias.data[2:], -2.0)
+            self.class_embed = nn.ModuleList([self.class_embed for _ in range(num_pred)])
+            self.bbox_embed = nn.ModuleList([self.bbox_embed for _ in range(num_pred)])
+            self.transformer.decoder.bbox_embed = None
+
         if contrastive_loss:
             self.contrastive_projection_image = nn.Linear(hidden_dim, contrastive_hdim, bias=False)
             self.contrastive_projection_text = nn.Linear(
@@ -123,15 +167,36 @@ class MDETR(nn.Module):
         if encode_and_save:
             assert memory_cache is None
             features, pos = self.backbone(samples)
-            src, mask = features[-1].decompose()
+
+            srcs = []
+            masks = []
+            for l, feat in enumerate(features):
+                src, mask = feat.decompose()
+                srcs.append(self.input_proj[l](src))
+                masks.append(mask)
+                assert mask is not None
+            if self.num_feature_levels > len(srcs):
+                _len_srcs = len(srcs)
+                for l in range(_len_srcs, self.num_feature_levels):
+                    if l == _len_srcs:
+                        src = self.input_proj[l](features[-1].tensors)
+                    else:
+                        src = self.input_proj[l](srcs[-1])
+                    m = samples.mask
+                    mask = F.interpolate(m[None].float(), size=src.shape[-2:]).to(torch.bool)[0]
+                    pos_l = self.backbone[1](NestedTensor(src, mask)).to(src.dtype)
+                    srcs.append(src)
+                    masks.append(mask)
+                    pos.append(pos_l)
+            # src, mask = features[-1].decompose()
             query_embed = self.query_embed.weight
             if self.qa_dataset is not None:
                 query_embed = torch.cat([query_embed, self.qa_embed.weight], 0)
             memory_cache = self.transformer(
-                self.input_proj(src),
-                mask,
+                srcs,
+                masks,
                 query_embed,
-                pos[-1],
+                pos,
                 encode_and_save=True,
                 img_memory=None,
             )
@@ -144,25 +209,16 @@ class MDETR(nn.Module):
 
         else:
             assert memory_cache is not None
-            if self.transformer._get_name() == 'DeformableTransformer':
-                hs = self.transformer(
-                    mask=memory_cache["mask"],
-                    query_embed=memory_cache["query_embed"],
-                    pos_embed=memory_cache["pos_embed"],
-                    encode_and_save=False,
-                    img_memory=memory_cache["img_memory"],
-                    spatial_shapes=memory_cache["spatial_shapes"],
-                    level_start_index=memory_cache["level_start_index"],
-                    valid_ratios=memory_cache["valid_ratios"],
-                )
-            else:
-                hs = self.transformer(
-                    mask=memory_cache["mask"],
-                    query_embed=memory_cache["query_embed"],
-                    pos_embed=memory_cache["pos_embed"],
-                    encode_and_save=False,
-                    img_memory=memory_cache["img_memory"],
-                )
+            hs, init_reference, inter_references = self.transformer(
+                masks=memory_cache["mask"],
+                query_embed=memory_cache["query_embed"],
+                pos_embeds=memory_cache["pos_embed"],
+                encode_and_save=False,
+                img_memory=memory_cache["img_memory"],
+                spatial_shapes=memory_cache["spatial_shapes"],
+                level_start_index=memory_cache["level_start_index"],
+                valid_ratios=memory_cache["valid_ratios"],
+            )
             out = {}
             if self.qa_dataset is not None:
                 if self.split_qa_heads:
@@ -190,8 +246,29 @@ class MDETR(nn.Module):
                     hs = hs[:, :, :-1]
                     out["pred_answer"] = self.answer_head(answer_embeds)
 
-            outputs_class = self.class_embed(hs)
-            outputs_coord = self.bbox_embed(hs).sigmoid()
+            outputs_classes = []
+            outputs_coords = []
+            for lvl in range(hs.shape[0]):
+                if lvl == 0:
+                    reference = init_reference
+                else:
+                    reference = inter_references[lvl - 1]
+                reference = inverse_sigmoid(reference)
+                outputs_class = self.class_embed[lvl](hs[lvl])
+                tmp = self.bbox_embed[lvl](hs[lvl])
+                if reference.shape[-1] == 4:
+                    tmp += reference
+                else:
+                    assert reference.shape[-1] == 2
+                    tmp[..., :2] += reference
+                outputs_coord = tmp.sigmoid()
+                outputs_classes.append(outputs_class)
+                outputs_coords.append(outputs_coord)
+            outputs_class = torch.stack(outputs_classes)
+            outputs_coord = torch.stack(outputs_coords)
+
+            # outputs_class = self.class_embed(hs)
+            # outputs_coord = self.bbox_embed(hs).sigmoid()
             out.update(
                 {
                     "pred_logits": outputs_class[-1],
@@ -651,6 +728,7 @@ def build(args):
         transformer,
         num_classes=num_classes,
         num_queries=args.num_queries,
+        num_feature_levels=args.num_feature_levels,
         aux_loss=args.aux_loss,
         contrastive_hdim=args.contrastive_loss_hdim,
         contrastive_loss=args.contrastive_loss,
