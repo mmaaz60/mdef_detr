@@ -64,7 +64,7 @@ class MDETR(nn.Module):
         self.class_embed = nn.Linear(hidden_dim, num_classes + 1)
         self.isfinal_embed = nn.Linear(hidden_dim, 1) if predict_final else None
         self.bbox_embed = MLP(hidden_dim, hidden_dim, 4, 3)
-        self.query_embed = nn.Embedding(num_queries, hidden_dim)
+        self.query_embed = nn.Embedding(num_queries, 2*hidden_dim)
         if qa_dataset is not None:
             nb_heads = 6 if qa_dataset == "gqa" else 4
             self.qa_embed = nn.Embedding(nb_heads if split_qa_heads else 1, hidden_dim)

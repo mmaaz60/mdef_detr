@@ -8,7 +8,6 @@
 # ------------------------------------------------------------------------
 
 import copy
-from typing import Optional, List
 import math
 
 import torch
@@ -18,8 +17,6 @@ from torch.nn.init import xavier_uniform_, constant_, uniform_, normal_
 
 from util.misc import inverse_sigmoid
 from models.ops.modules import MSDeformAttn
-
-from transformers import RobertaModel, RobertaTokenizerFast
 
 
 class DeformableTransformer(nn.Module):
@@ -161,11 +158,6 @@ class DeformableTransformer(nn.Module):
             mask = mask.flatten(1)
             pos_embed = pos_embed.flatten(2).permute(2, 0, 1)
 
-            if self.pass_pos_and_query:  # true
-                tgt = torch.zeros_like(query_embed)
-            else:
-                src, tgt, query_embed, pos_embed = src + 0.1 * pos_embed, query_embed, None, None
-
             device = src.device
             # Add text dimension to spatial dim
             spatial_shape = (h, w)
@@ -191,8 +183,6 @@ class DeformableTransformer(nn.Module):
             img_memory = self.encoder(src_flatten, spatial_shapes, level_start_index, valid_ratios,
                                       lvl_pos_embed_flatten, mask_flatten)
 
-            assert img_memory.shape[-1] == tgt.shape[-1]
-
             memory_cache = {
                 "img_memory": img_memory,
                 "img_pooled_op": img_memory[0] if self.CLS is not None else None,  # Return the CLS token
@@ -206,12 +196,6 @@ class DeformableTransformer(nn.Module):
             return memory_cache
 
         else:
-            if self.pass_pos_and_query:
-                tgt = torch.zeros_like(query_embed)
-            else:
-                src, tgt, query_embed, lvl_pos_embed_flatten = src_flatten + 0.1 * lvl_pos_embed_flatten, query_embed,\
-                                                               None, None
-            assert img_memory.shape[-1] == tgt.shape[-1]
             # prepare input for decoder
             bs, _, c = img_memory.shape
             if self.two_stage:
@@ -230,7 +214,7 @@ class DeformableTransformer(nn.Module):
                 pos_trans_out = self.pos_trans_norm(self.pos_trans(self.get_proposal_pos_embed(topk_coords_unact)))
                 query_embed, tgt = torch.split(pos_trans_out, c, dim=2)
             else:
-                # query_embed = torch.split(query_embed, c, dim=1)
+                query_embed, tgt = torch.split(query_embed, c, dim=1)
                 query_embed = query_embed.unsqueeze(0).expand(bs, -1, -1)
                 tgt = tgt.unsqueeze(0).expand(bs, -1, -1)
                 reference_points = self.reference_points(query_embed).sigmoid()
