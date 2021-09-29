@@ -8,6 +8,7 @@ from PIL import Image
 
 OUTPUT_DIR = "../"
 IMAGES_DIR = ""
+APPLY_NMS = False
 
 
 def nms(dets, scores, thresh):
@@ -96,7 +97,8 @@ def get_ca_od_annotations(dir_path):
         image = images_dict[key]
         image["id"] = i
         annotations = annotations_dict[key]
-        annotations = class_agnostic_nms(annotations)
+        if APPLY_NMS:
+            annotations = class_agnostic_nms(annotations)
         for a in annotations:
             a["image_id"] = i
         # Correct the width and height data types
@@ -136,6 +138,8 @@ def parse_arguments():
                          "height values in the annotation file.")
     ap.add_argument("-o", "--output_dir_path", required=True,
                     help="Path to the output directory for storing the filtered annotations.")
+    ap.add_argument("--nms", action="store_true", help="Flag to decide either to apply NMS or not.")
+
     args = vars(ap.parse_args())
 
     return args
@@ -146,8 +150,13 @@ if __name__ == "__main__":
     input_dir_path = args["input_dir_path"]
     images_dir_path = args["images_dir_path"]
     output_dir_path = args["output_dir_path"]
+    if not os.path.exists(output_dir_path):
+        os.makedirs(output_dir_path)
+    nms = args["nms"]
     IMAGES_DIR = images_dir_path
     OUTPUT_DIR = output_dir_path
+    if nms:
+        APPLY_NMS = True
     if not os.path.exists(OUTPUT_DIR):
         os.makedirs(OUTPUT_DIR)
 
