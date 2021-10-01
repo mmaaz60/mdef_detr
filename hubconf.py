@@ -61,7 +61,7 @@ def _make_detr(
 
 def _make_deformabledetr(
         backbone_name: str,
-        num_queries=100,
+        num_queries=300,
         mask=False,
         qa_dataset=None,
         predict_final=False,
@@ -69,8 +69,8 @@ def _make_deformabledetr(
 ):
     hidden_dim = 256
     backbone = _make_backbone(backbone_name, mask)
-    transformer = DeformableTransformer(d_model=hidden_dim, return_intermediate_dec=True, num_feature_levels=1,
-                                        dim_feedforward=2048, two_stage_num_proposals=100)
+    transformer = DeformableTransformer(d_model=hidden_dim, return_intermediate_dec=True, num_feature_levels=4,
+                                        dim_feedforward=1024, two_stage_num_proposals=300)
     detr = MDETR(
         backbone,
         transformer,
@@ -86,7 +86,7 @@ def _make_deformabledetr(
     return detr
 
 
-def mdeformable_detr(pretrained=False, return_postprocessor=False, checkpoints_path=""):
+def deformable_detr(pretrained=False, return_postprocessor=False, checkpoints_path=""):
     """
     MDETR R101 with 6 encoder and 6 decoder layers.
     Pretrained on our combined aligned dataset of 1.3 million images paired with text.
