@@ -74,6 +74,7 @@ def _make_deformabledetr(
     detr = MDETR(
         backbone,
         transformer,
+        num_feature_levels=4,
         num_classes=1,
         num_queries=num_queries,
         qa_dataset=qa_dataset,
