@@ -35,7 +35,7 @@ def _make_backbone(backbone_name: str, mask: bool = False):
 def _make_detr(
         backbone_name: str,
         num_queries=100,
-        mask=True,
+        mask=False,
         qa_dataset=None,
         predict_final=False,
         text_encoder="roberta-base",
@@ -62,7 +62,7 @@ def _make_detr(
 def _make_deformabledetr(
         backbone_name: str,
         num_queries=300,
-        mask=False,
+        mask=True,
         qa_dataset=None,
         predict_final=False,
         contrastive_align_loss=True,
