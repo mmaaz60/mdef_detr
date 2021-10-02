@@ -82,8 +82,8 @@ def _make_deformabledetr(
         contrastive_align_loss=contrastive_align_loss,
         contrastive_hdim=64,
     )
-    if mask:
-        return DETRsegm(detr)
+    # if mask:
+    #     return DETRsegm(detr)
     return detr
 
 
