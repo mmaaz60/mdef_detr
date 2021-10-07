@@ -167,7 +167,7 @@ def get_args_parser():
     )
     parser.add_argument(
         "--dim_feedforward",
-        default=1024,
+        default=2048,
         type=int,
         help="Intermediate size of the feedforward layers in the transformer blocks",
     )
@@ -184,7 +184,7 @@ def get_args_parser():
         type=int,
         help="Number of attention heads inside the transformer's attentions",
     )
-    parser.add_argument("--num_queries", default=300, type=int, help="Number of query slots")
+    parser.add_argument("--num_queries", default=100, type=int, help="Number of query slots")
     parser.add_argument("--pre_norm", action="store_true")
     parser.add_argument(
         "--no_pass_pos_and_query",
@@ -343,7 +343,7 @@ def main(args):
     model_ema = deepcopy(model) if args.ema else None
     model_without_ddp = model
     if args.distributed:
-        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
+        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu], find_unused_parameters=True)
         model_without_ddp = model.module
     n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print("number of params:", n_parameters)

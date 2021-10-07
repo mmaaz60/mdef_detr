@@ -122,6 +122,10 @@ class MDETR(nn.Module):
             self.contrastive_projection_text = nn.Linear(
                 self.transformer.text_encoder.config.hidden_size, contrastive_hdim, bias=False
             )
+        self.contrastive_align_loss = contrastive_align_loss
+        if contrastive_align_loss:
+            self.contrastive_align_projection_image = nn.Linear(hidden_dim, contrastive_hdim)
+            self.contrastive_align_projection_text = nn.Linear(hidden_dim, contrastive_hdim)
 
         self.qa_dataset = qa_dataset
         self.split_qa_heads = split_qa_heads
@@ -147,10 +151,11 @@ class MDETR(nn.Module):
                 assert qa_dataset == "gqa", "Clevr QA is not supported with unified head"
                 self.answer_head = nn.Linear(hidden_dim, 1853)
 
-    def forward(self, samples: NestedTensor, encode_and_save=True, memory_cache=None):
+    def forward(self, samples: NestedTensor, captions, encode_and_save=True, memory_cache=None):
         """The forward expects a NestedTensor, which consists of:
            - samples.tensor: batched images, of shape [batch_size x 3 x H x W]
            - samples.mask: a binary mask of shape [batch_size x H x W], containing 1 on padded pixels
+
         It returns a dict with the following elements:
            - "pred_logits": the classification logits (including no-object) for all queries.
                             Shape= [batch_size x num_queries x (num_classes + 1)]
@@ -197,8 +202,11 @@ class MDETR(nn.Module):
                 masks,
                 query_embed,
                 pos,
+                captions,
                 encode_and_save=True,
+                text_memory=None,
                 img_memory=None,
+                text_attention_mask=None,
             )
 
             if self.contrastive_loss:
@@ -214,11 +222,14 @@ class MDETR(nn.Module):
                 query_embed=memory_cache["query_embed"],
                 pos_embeds=memory_cache["pos_embed"],
                 encode_and_save=False,
+                text_memory=memory_cache["text_memory_resized"],
                 img_memory=memory_cache["img_memory"],
+                text_attention_mask=memory_cache["text_attention_mask"],
                 spatial_shapes=memory_cache["spatial_shapes"],
                 level_start_index=memory_cache["level_start_index"],
                 valid_ratios=memory_cache["valid_ratios"],
             )
+
             out = {}
             if self.qa_dataset is not None:
                 if self.split_qa_heads:
@@ -280,14 +291,39 @@ class MDETR(nn.Module):
                 outputs_isfinal = self.isfinal_embed(hs)
                 out["pred_isfinal"] = outputs_isfinal[-1]
             proj_queries, proj_tokens = None, None
-            if self.aux_loss:
-                out["aux_outputs"] = [
+            if self.contrastive_align_loss:
+                proj_queries = F.normalize(self.contrastive_align_projection_image(hs), p=2, dim=-1)
+                proj_tokens = F.normalize(
+                    self.contrastive_align_projection_text(memory_cache["text_memory"]).transpose(0, 1), p=2, dim=-1
+                )
+                out.update(
                     {
-                        "pred_logits": a,
-                        "pred_boxes": b,
+                        "proj_queries": proj_queries[-1],
+                        "proj_tokens": proj_tokens,
+                        "tokenized": memory_cache["tokenized"],
                     }
-                    for a, b in zip(outputs_class[:-1], outputs_coord[:-1])
-                ]
+                )
+            if self.aux_loss:
+                if self.contrastive_align_loss:
+                    assert proj_tokens is not None and proj_queries is not None
+                    out["aux_outputs"] = [
+                        {
+                            "pred_logits": a,
+                            "pred_boxes": b,
+                            "proj_queries": c,
+                            "proj_tokens": proj_tokens,
+                            "tokenized": memory_cache["tokenized"],
+                        }
+                        for a, b, c in zip(outputs_class[:-1], outputs_coord[:-1], proj_queries[:-1])
+                    ]
+                else:
+                    out["aux_outputs"] = [
+                        {
+                            "pred_logits": a,
+                            "pred_boxes": b,
+                        }
+                        for a, b in zip(outputs_class[:-1], outputs_coord[:-1])
+                    ]
                 if outputs_isfinal is not None:
                     assert len(outputs_isfinal[:-1]) == len(out["aux_outputs"])
                     for i in range(len(outputs_isfinal[:-1])):
@@ -301,6 +337,7 @@ class ContrastiveCriterion(nn.Module):
         self.temperature = temperature
 
     def forward(self, pooled_text, pooled_image):
+
         normalized_text_emb = F.normalize(pooled_text, p=2, dim=1)
         normalized_img_emb = F.normalize(pooled_image, p=2, dim=1)
 
@@ -495,7 +532,7 @@ class SetCriterion(nn.Module):
         self.register_buffer("empty_weight", empty_weight)
         self.focal_alpha = focal_alpha
 
-    def loss_isfinal(self, outputs, targets, indices, num_boxes):
+    def loss_isfinal(self, outputs, targets, positive_map, indices, num_boxes):
         """This loss is used in some referring expression dataset (specifically Clevr-REF+)
         It trains the model to predict which boxes are being referred to (ie are "final")
         Eg if the caption is "the cube next to the cylinder", MDETR will detect both the cube and the cylinder.
@@ -518,38 +555,107 @@ class SetCriterion(nn.Module):
 
         return losses
 
-    def loss_labels(self, outputs, targets, indices, num_boxes):
+    def loss_labels(self, outputs, targets, positive_map, indices, num_boxes):
         """Classification loss (NLL)
         targets dicts must contain the key "labels" containing a tensor of dim [nb_target_boxes]
         """
-        assert 'pred_logits' in outputs
-        src_logits = outputs['pred_logits']
 
-        idx = self._get_src_permutation_idx(indices)
-        target_classes_o = torch.cat([t["labels"][J] for t, (_, J) in zip(targets, indices)])
-        target_classes = torch.full(src_logits.shape[:2], self.num_classes,
-                                    dtype=torch.int64, device=src_logits.device)
-        target_classes[idx] = target_classes_o
+        logits = outputs["pred_logits"].log_softmax(-1)  # BS x (num_queries) x (num_tokens)
 
-        target_classes_onehot = torch.zeros([src_logits.shape[0], src_logits.shape[1], src_logits.shape[2] + 1],
-                                            dtype=src_logits.dtype, layout=src_logits.layout, device=src_logits.device)
-        target_classes_onehot.scatter_(2, target_classes.unsqueeze(-1), 1)
+        src_idx = self._get_src_permutation_idx(indices)
+        tgt_idx = []
+        offset = 0
+        for i, (_, tgt) in enumerate(indices):
+            tgt_idx.append(tgt + offset)
+            offset += len(targets[i]["boxes"])
+        tgt_idx = torch.cat(tgt_idx)
 
-        target_classes_onehot = target_classes_onehot[:, :, :-1]
-        loss_ce = sigmoid_focal_loss(src_logits, target_classes_onehot, num_boxes, alpha=self.focal_alpha, gamma=2) * \
-                  src_logits.shape[1]
-        losses = {'loss_ce': loss_ce}
+        tgt_pos = positive_map[tgt_idx]
+        target_sim = torch.zeros_like(logits)
+        target_sim[:, :, -1] = 1
+        target_sim[src_idx] = tgt_pos
 
-        # TODO this should probably be a separate loss, not hacked in this one here
-        losses['class_error'] = 100 - accuracy(src_logits[idx], target_classes_o)[0]
+        loss_ce = -(logits * target_sim).sum(-1)
+
+        eos_coef = torch.full(loss_ce.shape, self.eos_coef, device=target_sim.device)
+        eos_coef[src_idx] = 1
+
+        loss_ce = loss_ce * eos_coef
+        loss_ce = loss_ce.sum() / num_boxes
+
+        losses = {"loss_ce": loss_ce}
 
         return losses
 
-    def loss_contrastive_align(self, outputs, targets, indices, num_boxes):
-        raise NotImplementedError
+    def loss_contrastive_align(self, outputs, targets, positive_map, indices, num_boxes):
+        bs = outputs["proj_queries"].shape[0]
+        tokenized = outputs["tokenized"]
+
+        normalized_text_emb = outputs["proj_tokens"]  # BS x (num_tokens) x hdim
+        normalized_img_emb = outputs["proj_queries"]  # BS x (num_queries) x hdim
+
+        logits = (
+            torch.matmul(normalized_img_emb, normalized_text_emb.transpose(-1, -2)) / self.temperature
+        )  # BS x (num_queries) x (num_tokens)
+
+        # construct a map such that positive_map[k, i,j] = True iff query i is associated to token j in batch item k
+        # For efficency, the construction happens on CPU, then the whole matrix is transferred to GPU in one go.
+        positive_map = torch.zeros(logits.shape, dtype=torch.bool)
+        for i, ((idx_src, idx_tgt), tgt) in enumerate(zip(indices, targets)):
+            if "tokens_positive" in tgt:
+                cur_tokens = [tgt["tokens_positive"][j] for j in idx_tgt]
+            else:
+                cur_tokens = [tgt["tokens"][j] for j in idx_tgt]
+
+            for j, tok_list in enumerate(cur_tokens):
+                for (beg, end) in tok_list:
+                    beg_pos = tokenized.char_to_token(i, beg)
+                    end_pos = tokenized.char_to_token(i, end - 1)
+                    if beg_pos is None:
+                        try:
+                            beg_pos = tokenized.char_to_token(beg + 1)
+                            if beg_pos is None:
+                                beg_pos = tokenized.char_to_token(beg + 2)
+                        except:
+                            beg_pos = None
+                    if end_pos is None:
+                        try:
+                            end_pos = tokenized.char_to_token(end - 2)
+                            if end_pos is None:
+                                end_pos = tokenized.char_to_token(end - 3)
+                        except:
+                            end_pos = None
+                    if beg_pos is None or end_pos is None:
+                        continue
+
+                    assert beg_pos is not None and end_pos is not None
+                    positive_map[i, idx_src[j], beg_pos : end_pos + 1].fill_(True)
+
+        positive_map = positive_map.to(logits.device)
+        positive_logits = -logits.masked_fill(~positive_map, 0)
+        negative_logits = logits  # .masked_fill(positive_map, -1000000)
+
+        boxes_with_pos = positive_map.any(2)
+        pos_term = positive_logits.sum(2)
+        neg_term = negative_logits.logsumexp(2)
+
+        nb_pos = positive_map.sum(2) + 1e-6
+
+        box_to_token_loss = ((pos_term / nb_pos + neg_term)).masked_fill(~boxes_with_pos, 0).sum()
+
+        tokens_with_pos = positive_map.any(1)
+        pos_term = positive_logits.sum(1)
+        neg_term = negative_logits.logsumexp(1)
+
+        nb_pos = positive_map.sum(1) + 1e-6
+
+        tokens_to_boxes_loss = ((pos_term / nb_pos + neg_term)).masked_fill(~tokens_with_pos, 0).sum()
+        tot_loss = (box_to_token_loss + tokens_to_boxes_loss) / 2
+
+        return {"loss_contrastive_align": tot_loss / num_boxes}
 
     @torch.no_grad()
-    def loss_cardinality(self, outputs, targets, indices, num_boxes):
+    def loss_cardinality(self, outputs, targets, positive_map, indices, num_boxes):
         """Compute the cardinality error, ie the absolute error in the number of predicted non-empty boxes
         This is not really a loss, it is intended for logging purposes only. It doesn't propagate gradients
         """
@@ -569,7 +675,7 @@ class SetCriterion(nn.Module):
         losses = {"cardinality_error": card_err}
         return losses
 
-    def loss_boxes(self, outputs, targets, indices, num_boxes):
+    def loss_boxes(self, outputs, targets, positive_map, indices, num_boxes):
         """Compute the losses related to the bounding boxes, the L1 regression loss and the GIoU loss
         targets dicts must contain the key "boxes" containing a tensor of dim [nb_target_boxes, 4]
         The target boxes are expected in format (center_x, center_y, h, w), normalized by the image size.
@@ -590,7 +696,7 @@ class SetCriterion(nn.Module):
         losses["loss_giou"] = loss_giou.sum() / num_boxes
         return losses
 
-    def loss_masks(self, outputs, targets, indices, num_boxes):
+    def loss_masks(self, outputs, targets, positive_map, indices, num_boxes):
         """Compute the losses related to the masks: the focal loss and the dice loss.
         targets dicts must contain the key "masks" containing a tensor of dim [nb_target_boxes, h, w]
         """
@@ -630,7 +736,7 @@ class SetCriterion(nn.Module):
         tgt_idx = torch.cat([tgt for (_, tgt) in indices])
         return batch_idx, tgt_idx
 
-    def get_loss(self, loss, outputs, targets, indices, num_boxes, **kwargs):
+    def get_loss(self, loss, outputs, targets, positive_map, indices, num_boxes, **kwargs):
         loss_map = {
             "labels": self.loss_labels,
             "cardinality": self.loss_cardinality,
@@ -640,9 +746,9 @@ class SetCriterion(nn.Module):
             "contrastive_align": self.loss_contrastive_align,
         }
         assert loss in loss_map, f"do you really want to compute {loss} loss?"
-        return loss_map[loss](outputs, targets, indices, num_boxes, **kwargs)
+        return loss_map[loss](outputs, targets, positive_map, indices, num_boxes, **kwargs)
 
-    def forward(self, outputs, targets):
+    def forward(self, outputs, targets, positive_map):
         """This performs the loss computation.
         Parameters:
              outputs: dict of tensors, see the output specification of the model for the format
@@ -652,7 +758,7 @@ class SetCriterion(nn.Module):
         outputs_without_aux = {k: v for k, v in outputs.items() if k != "aux_outputs"}
 
         # Retrieve the matching between the outputs of the last layer and the targets
-        indices = self.matcher(outputs_without_aux, targets)
+        indices = self.matcher(outputs_without_aux, targets, positive_map)
 
         # Compute the average number of target boxes accross all nodes, for normalization purposes
         num_boxes = sum(len(t["labels"]) for t in targets)
@@ -664,18 +770,18 @@ class SetCriterion(nn.Module):
         # Compute all the requested losses
         losses = {}
         for loss in self.losses:
-            losses.update(self.get_loss(loss, outputs, targets, indices, num_boxes))
+            losses.update(self.get_loss(loss, outputs, targets, positive_map, indices, num_boxes))
 
         # In case of auxiliary losses, we repeat this process with the output of each intermediate layer.
         if "aux_outputs" in outputs:
             for i, aux_outputs in enumerate(outputs["aux_outputs"]):
-                indices = self.matcher(aux_outputs, targets)
+                indices = self.matcher(aux_outputs, targets, positive_map)
                 for loss in self.losses:
                     if loss == "masks":
                         # Intermediate masks losses are too costly to compute, we ignore them.
                         continue
                     kwargs = {}
-                    l_dict = self.get_loss(loss, aux_outputs, targets, indices, num_boxes, **kwargs)
+                    l_dict = self.get_loss(loss, aux_outputs, targets, positive_map, indices, num_boxes, **kwargs)
                     l_dict = {k + f"_{i}": v for k, v in l_dict.items()}
                     losses.update(l_dict)
 
@@ -698,7 +804,7 @@ class MLP(nn.Module):
 
 
 def build(args):
-    num_classes = 1
+    num_classes = 255
     device = torch.device(args.device)
 
     assert not args.masks or args.mask_model != "none"
@@ -732,7 +838,7 @@ def build(args):
         aux_loss=args.aux_loss,
         contrastive_hdim=args.contrastive_loss_hdim,
         contrastive_loss=args.contrastive_loss,
-        contrastive_align_loss=False,
+        contrastive_align_loss=args.contrastive_align_loss,
         qa_dataset=qa_dataset,
         split_qa_heads=args.split_qa_heads,
         predict_final=args.predict_final,
@@ -748,8 +854,7 @@ def build(args):
     if args.contrastive_loss:
         weight_dict["contrastive_loss"] = args.contrastive_loss_coef
     if args.contrastive_align_loss:
-        # weight_dict["loss_contrastive_align"] = args.contrastive_align_loss_coef
-        pass
+        weight_dict["loss_contrastive_align"] = args.contrastive_align_loss_coef
     if args.predict_final:
         weight_dict["loss_isfinal"] = 1
 
@@ -788,8 +893,7 @@ def build(args):
     if args.predict_final:
         losses += ["isfinal"]
     if args.contrastive_align_loss:
-        # losses += ["contrastive_align"]
-        pass
+        losses += ["contrastive_align"]
 
     criterion = None
     if not args.no_detection:

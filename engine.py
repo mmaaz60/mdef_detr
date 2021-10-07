@@ -54,6 +54,7 @@ def train_one_epoch(
     for i, batch_dict in enumerate(metric_logger.log_every(data_loader, print_freq, header)):
         curr_step = epoch * len(data_loader) + i
         samples = batch_dict["samples"].to(device)
+        positive_map = batch_dict["positive_map"].to(device) if "positive_map" in batch_dict else None
         targets = batch_dict["targets"]
         answers = {k: v.to(device) for k, v in batch_dict["answers"].items()} if "answers" in batch_dict else None
         captions = [t["caption"] for t in targets]
@@ -64,12 +65,12 @@ def train_one_epoch(
         if args.masks:
             outputs = model(samples, captions)
         else:
-            memory_cache = model(samples, encode_and_save=True)
-            outputs = model(samples, encode_and_save=False, memory_cache=memory_cache)
+            memory_cache = model(samples, captions, encode_and_save=True)
+            outputs = model(samples, captions, encode_and_save=False, memory_cache=memory_cache)
 
         loss_dict = {}
         if criterion is not None:
-            loss_dict.update(criterion(outputs, targets))  # Update criterion to account for targets only
+            loss_dict.update(criterion(outputs, targets, positive_map))
 
         if contrastive_criterion is not None:
             assert memory_cache is not None
@@ -122,7 +123,7 @@ def train_one_epoch(
 
 
 @torch.no_grad()
-def evaluate(  # TODO: Revisit evaluator as per the minus_language thing
+def evaluate(
     model: torch.nn.Module,
     criterion: Optional[torch.nn.Module],
     contrastive_criterion: Optional[torch.nn.Module],
@@ -158,8 +159,8 @@ def evaluate(  # TODO: Revisit evaluator as per the minus_language thing
         if args.masks:
             outputs = model(samples, captions)
         else:
-            memory_cache = model(samples, encode_and_save=True)
-            outputs = model(samples, encode_and_save=False, memory_cache=memory_cache)
+            memory_cache = model(samples, captions, encode_and_save=True)
+            outputs = model(samples, captions, encode_and_save=False, memory_cache=memory_cache)
 
         loss_dict = {}
         if criterion is not None:

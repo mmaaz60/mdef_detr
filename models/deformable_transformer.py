@@ -8,6 +8,7 @@
 # ------------------------------------------------------------------------
 
 import copy
+from typing import Optional, List
 import math
 
 import torch
@@ -18,6 +19,8 @@ from torch.nn.init import xavier_uniform_, constant_, uniform_, normal_
 from util.misc import inverse_sigmoid
 from models.ops.modules import MSDeformAttn
 
+from transformers import RobertaModel, RobertaTokenizerFast
+
 
 class DeformableTransformer(nn.Module):
     def __init__(self, d_model=256, nhead=8,
@@ -26,6 +29,8 @@ class DeformableTransformer(nn.Module):
                  num_feature_levels=4, dec_n_points=4,  enc_n_points=4,
                  two_stage=False, two_stage_num_proposals=300,
                  pass_pos_and_query=True,
+                 text_encoder_type="roberta-base",
+                 freeze_text_encoder=False,
                  contrastive_loss=False,
                  ):
         super().__init__()
@@ -58,8 +63,20 @@ class DeformableTransformer(nn.Module):
 
         self.pass_pos_and_query = pass_pos_and_query
         self.CLS = nn.Embedding(1, d_model) if contrastive_loss else None
+        self.tokenizer = RobertaTokenizerFast.from_pretrained(text_encoder_type)
+        self.text_encoder = RobertaModel.from_pretrained(text_encoder_type)
+
+        if freeze_text_encoder:
+            for p in self.text_encoder.parameters():
+                p.requires_grad_(False)
 
         self.expander_dropout = 0.1
+        config = self.text_encoder.config
+        self.resizer = FeatureResizer(
+            input_feat_size=config.hidden_size,
+            output_feat_size=d_model,
+            dropout=self.expander_dropout,
+        )
 
     def _reset_parameters(self):
         for p in self.parameters():
@@ -135,8 +152,11 @@ class DeformableTransformer(nn.Module):
         masks=None,
         query_embed=None,
         pos_embeds=None,
+        text=None,
         encode_and_save=True,
+        text_memory=None,
         img_memory=None,
+        text_attention_mask=None,
         spatial_shapes=None,
         level_start_index=None,
         valid_ratios=None,
@@ -149,6 +169,27 @@ class DeformableTransformer(nn.Module):
             mask_flatten = []
             lvl_pos_embed_flatten = []
             spatial_shapes = []
+
+            # Encode the text
+            device = srcs[0].device
+            if isinstance(text[0], str):
+                # Encode the text
+                tokenized = self.tokenizer.batch_encode_plus(text, padding="longest", return_tensors="pt").to(
+                    device)
+                encoded_text = self.text_encoder(**tokenized)
+
+                # Transpose memory because pytorch's attention expects sequence first
+                text_memory = encoded_text.last_hidden_state.transpose(0, 1)
+                # Invert attention mask that we get from huggingface because its the opposite in pytorch transformer
+                text_attention_mask = tokenized.attention_mask.ne(1).bool()
+
+                # Resize the encoder hidden states to be of the same d_model as the decoder
+                text_memory_resized = self.resizer(text_memory)
+            else:
+                # The text is already encoded, use as is.
+                text_attention_mask, text_memory_resized, tokenized = text
+            text_len = text_memory_resized.shape[0]
+
             for lvl, (src, mask, pos_embed) in enumerate(zip(srcs, masks, pos_embeds)): # multi-scale implemented
                 bs, c, h, w = src.shape
                 spatial_shape = (h, w)
@@ -173,11 +214,15 @@ class DeformableTransformer(nn.Module):
                                       lvl_pos_embed_flatten, mask_flatten)
 
             memory_cache = {
+                "text_memory_resized": text_memory_resized,
                 "img_memory": img_memory,
+                "text_pooled_op": encoded_text.pooler_output if self.CLS is not None else None,
                 "img_pooled_op": img_memory[0] if self.CLS is not None else None,  # Return the CLS token
                 "mask": mask_flatten,
+                "text_attention_mask": text_attention_mask,
                 "pos_embed": lvl_pos_embed_flatten,
                 "query_embed": query_embed,
+                "tokenized": tokenized,
                 "spatial_shapes": spatial_shapes,
                 "level_start_index": level_start_index,
                 "valid_ratios": valid_ratios,
@@ -277,7 +322,6 @@ class DeformableTransformerEncoder(nn.Module):
                                           torch.linspace(0.5, W_ - 0.5, W_, dtype=torch.float32, device=device))
             ref_y = ref_y.reshape(-1)[None] / (valid_ratios[:, None, lvl, 1] * H_)
             ref_x = ref_x.reshape(-1)[None] / (valid_ratios[:, None, lvl, 0] * W_)
-            # Concatenating text reference points to image dim
             ref = torch.stack((ref_x, ref_y), -1)
             reference_points_list.append(ref)
 
