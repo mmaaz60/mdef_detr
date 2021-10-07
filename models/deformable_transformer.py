@@ -50,7 +50,7 @@ class DeformableTransformer(nn.Module):
         self.decoder = DeformableTransformerDecoder(decoder_layer, num_decoder_layers, return_intermediate_dec)
 
         img_text_layer = ImageTextTransformerLayer(d_model, 8, dim_feedforward, dropout, activation)
-        self.img_text_attn = ImageTextTransformer(img_text_layer, 2, nn.LayerNorm(d_model))
+        self.img_text_attn = ImageTextTransformer(img_text_layer, 4, nn.LayerNorm(d_model))
 
         self.level_embed = nn.Parameter(torch.Tensor(num_feature_levels, d_model))
 
@@ -264,13 +264,16 @@ class DeformableTransformer(nn.Module):
                                             src_padding_mask=masks)
         # Concatenate decoder output with the text embeddings
         hs_mask = torch.zeros((hs.shape[0], hs.shape[1]), dtype=torch.bool, device=hs.device)
-        hs = torch.cat([hs.permute(1, 0, 2), text_memory], dim=1)
+        hs = torch.cat([hs.permute(1, 0, 2), text_memory], dim=0)
         hs_mask = torch.cat([hs_mask, text_attention_mask], dim=1)
-        hs_final = self.img_text_attn(hs, hs_mask)
+        hs = self.img_text_attn(hs, src_key_padding_mask=hs_mask)
+        hs = hs[:query_embed.shape[1]]
+        hs = hs.permute(1, 0, 2)
+
         inter_references_out = inter_references
         # if self.two_stage:
         #     return hs, init_reference_out, inter_references_out, enc_outputs_class, enc_outputs_coord_unact
-        return hs_final, init_reference_out, inter_references_out
+        return hs, init_reference_out, inter_references_out
 
 
 class DeformableTransformerEncoderLayer(nn.Module):
