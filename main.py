@@ -213,9 +213,9 @@ def get_args_parser():
 
     # Loss
     parser.add_argument(
-        "--no_aux_loss",
+        "--aux_loss",
         dest="aux_loss",
-        action="store_false",
+        action="store_true",
         help="Disables auxiliary decoding losses (loss at each layer)",
     )
     parser.add_argument(
@@ -228,9 +228,9 @@ def get_args_parser():
 
     parser.add_argument("--contrastive_loss", action="store_true", help="Whether to add contrastive loss")
     parser.add_argument(
-        "--no_contrastive_align_loss",
+        "--contrastive_align_loss",
         dest="contrastive_align_loss",
-        action="store_false",
+        action="store_true",
         help="Whether to add contrastive alignment loss",
     )
 

@@ -26,7 +26,7 @@ class DeformableTransformer(nn.Module):
     def __init__(self, d_model=256, nhead=8,
                  num_encoder_layers=6, num_decoder_layers=6, dim_feedforward=1024, dropout=0.1,
                  activation="relu", return_intermediate_dec=False,
-                 num_feature_levels=4, dec_n_points=4,  enc_n_points=4,
+                 num_feature_levels=4, dec_n_points=4, enc_n_points=4,
                  two_stage=False, two_stage_num_proposals=300,
                  pass_pos_and_query=True,
                  text_encoder_type="roberta-base",
@@ -48,6 +48,9 @@ class DeformableTransformer(nn.Module):
                                                           dropout, activation,
                                                           num_feature_levels, nhead, dec_n_points)
         self.decoder = DeformableTransformerDecoder(decoder_layer, num_decoder_layers, return_intermediate_dec)
+
+        img_text_layer = ImageTextTransformerLayer(d_model, 8, dim_feedforward, dropout, activation)
+        self.img_text_attn = ImageTextTransformer(img_text_layer, 2, nn.LayerNorm(d_model))
 
         self.level_embed = nn.Parameter(torch.Tensor(num_feature_levels, d_model))
 
@@ -147,20 +150,20 @@ class DeformableTransformer(nn.Module):
         return valid_ratio
 
     def forward(
-        self,
-        srcs=None,
-        masks=None,
-        query_embed=None,
-        pos_embeds=None,
-        text=None,
-        encode_and_save=True,
-        text_memory=None,
-        img_memory=None,
-        text_attention_mask=None,
-        spatial_shapes=None,
-        level_start_index=None,
-        valid_ratios=None,
-        ):
+            self,
+            srcs=None,
+            masks=None,
+            query_embed=None,
+            pos_embeds=None,
+            text=None,
+            encode_and_save=True,
+            text_memory=None,
+            img_memory=None,
+            text_attention_mask=None,
+            spatial_shapes=None,
+            level_start_index=None,
+            valid_ratios=None,
+    ):
         assert self.two_stage or query_embed is not None
 
         # prepare input for encoder
@@ -188,9 +191,8 @@ class DeformableTransformer(nn.Module):
             else:
                 # The text is already encoded, use as is.
                 text_attention_mask, text_memory_resized, tokenized = text
-            text_len = text_memory_resized.shape[0]
 
-            for lvl, (src, mask, pos_embed) in enumerate(zip(srcs, masks, pos_embeds)): # multi-scale implemented
+            for lvl, (src, mask, pos_embed) in enumerate(zip(srcs, masks, pos_embeds)):  # multi-scale implemented
                 bs, c, h, w = src.shape
                 spatial_shape = (h, w)
                 spatial_shapes.append(spatial_shape)
@@ -237,11 +239,13 @@ class DeformableTransformer(nn.Module):
 
                 # hack implementation for two-stage Deformable DETR
                 enc_outputs_class = self.decoder.class_embed[self.decoder.num_layers](output_memory)
-                enc_outputs_coord_unact = self.decoder.bbox_embed[self.decoder.num_layers](output_memory) + output_proposals
+                enc_outputs_coord_unact = self.decoder.bbox_embed[self.decoder.num_layers](
+                    output_memory) + output_proposals
 
                 topk = self.two_stage_num_proposals
                 topk_proposals = torch.topk(enc_outputs_class[..., 0], topk, dim=1)[1]
-                topk_coords_unact = torch.gather(enc_outputs_coord_unact, 1, topk_proposals.unsqueeze(-1).repeat(1, 1, 4))
+                topk_coords_unact = torch.gather(enc_outputs_coord_unact, 1,
+                                                 topk_proposals.unsqueeze(-1).repeat(1, 1, 4))
                 topk_coords_unact = topk_coords_unact.detach()
                 reference_points = topk_coords_unact.sigmoid()
                 init_reference_out = reference_points
@@ -258,11 +262,15 @@ class DeformableTransformer(nn.Module):
         hs, inter_references = self.decoder(tgt, reference_points, img_memory,
                                             spatial_shapes, level_start_index, valid_ratios, query_embed,
                                             src_padding_mask=masks)
-
+        # Concatenate decoder output with the text embeddings
+        hs_mask = torch.zeros((hs.shape[0], hs.shape[1]), dtype=torch.bool, device=hs.device)
+        hs = torch.cat([hs.permute(1, 0, 2), text_memory], dim=1)
+        hs_mask = torch.cat([hs_mask, text_attention_mask], dim=1)
+        hs_final = self.img_text_attn(hs, hs_mask)
         inter_references_out = inter_references
-        if self.two_stage:
-            return hs, init_reference_out, inter_references_out, enc_outputs_class, enc_outputs_coord_unact
-        return hs, init_reference_out, inter_references_out
+        # if self.two_stage:
+        #     return hs, init_reference_out, inter_references_out, enc_outputs_class, enc_outputs_coord_unact
+        return hs_final, init_reference_out, inter_references_out
 
 
 class DeformableTransformerEncoderLayer(nn.Module):
@@ -297,7 +305,8 @@ class DeformableTransformerEncoderLayer(nn.Module):
 
     def forward(self, src, pos, reference_points, spatial_shapes, level_start_index, padding_mask=None):
         # self attention
-        src2 = self.self_attn(self.with_pos_embed(src, pos), reference_points, src, spatial_shapes, level_start_index, padding_mask)
+        src2 = self.self_attn(self.with_pos_embed(src, pos), reference_points, src, spatial_shapes, level_start_index,
+                              padding_mask)
         src = src + self.dropout1(src2)
         src = self.norm1(src)
 
@@ -317,7 +326,6 @@ class DeformableTransformerEncoder(nn.Module):
     def get_reference_points(spatial_shapes, valid_ratios, device):
         reference_points_list = []
         for lvl, (H_, W_) in enumerate(spatial_shapes):
-
             ref_y, ref_x = torch.meshgrid(torch.linspace(0.5, H_ - 0.5, H_, dtype=torch.float32, device=device),
                                           torch.linspace(0.5, W_ - 0.5, W_, dtype=torch.float32, device=device))
             ref_y = ref_y.reshape(-1)[None] / (valid_ratios[:, None, lvl, 1] * H_)
@@ -372,7 +380,8 @@ class DeformableTransformerDecoderLayer(nn.Module):
         tgt = self.norm3(tgt)
         return tgt
 
-    def forward(self, tgt, query_pos, reference_points, src, src_spatial_shapes, level_start_index, src_padding_mask=None):
+    def forward(self, tgt, query_pos, reference_points, src, src_spatial_shapes, level_start_index,
+                src_padding_mask=None):
         # self attention
         q = k = self.with_pos_embed(tgt, query_pos)
         tgt2 = self.self_attn(q.transpose(0, 1), k.transpose(0, 1), tgt.transpose(0, 1))[0].transpose(0, 1)
@@ -415,7 +424,8 @@ class DeformableTransformerDecoder(nn.Module):
             else:
                 assert reference_points.shape[-1] == 2
                 reference_points_input = reference_points[:, :, None] * src_valid_ratios[:, None]
-            output = layer(output, query_pos, reference_points_input, src, src_spatial_shapes, src_level_start_index, src_padding_mask)
+            output = layer(output, query_pos, reference_points_input, src, src_spatial_shapes, src_level_start_index,
+                           src_padding_mask)
 
             # hack implementation for iterative bounding box refinement
             if self.bbox_embed is not None:
@@ -438,6 +448,96 @@ class DeformableTransformerDecoder(nn.Module):
             return torch.stack(intermediate), torch.stack(intermediate_reference_points)
 
         return output, reference_points
+
+
+class ImageTextTransformerLayer(nn.Module):
+    def __init__(self, d_model, nhead, dim_feedforward=2048, dropout=0.1, activation="relu", normalize_before=False):
+        super().__init__()
+        self.self_attn = nn.MultiheadAttention(d_model, nhead, dropout=dropout)
+        # Implementation of Feedforward model
+        self.linear1 = nn.Linear(d_model, dim_feedforward)
+        self.dropout = nn.Dropout(dropout)
+        self.linear2 = nn.Linear(dim_feedforward, d_model)
+
+        self.norm1 = nn.LayerNorm(d_model)
+        self.norm2 = nn.LayerNorm(d_model)
+        self.dropout1 = nn.Dropout(dropout)
+        self.dropout2 = nn.Dropout(dropout)
+
+        self.activation = _get_activation_fn(activation)
+        self.normalize_before = normalize_before
+
+    def with_pos_embed(self, tensor, pos: Optional[Tensor]):
+        return tensor if pos is None else tensor + pos
+
+    def forward_post(
+            self,
+            src,
+            src_mask: Optional[Tensor] = None,
+            src_key_padding_mask: Optional[Tensor] = None,
+            pos: Optional[Tensor] = None,
+    ):
+        q = k = self.with_pos_embed(src, pos)
+        src2 = self.self_attn(q, k, value=src, attn_mask=src_mask, key_padding_mask=src_key_padding_mask)[0]
+        src = src + self.dropout1(src2)
+        src = self.norm1(src)
+        src2 = self.linear2(self.dropout(self.activation(self.linear1(src))))
+        src = src + self.dropout2(src2)
+        src = self.norm2(src)
+        return src
+
+    def forward_pre(
+            self,
+            src,
+            src_mask: Optional[Tensor] = None,
+            src_key_padding_mask: Optional[Tensor] = None,
+            pos: Optional[Tensor] = None,
+    ):
+        src2 = self.norm1(src)
+        q = k = self.with_pos_embed(src2, pos)
+        src2 = self.self_attn(q, k, value=src2, attn_mask=src_mask, key_padding_mask=src_key_padding_mask)[0]
+        src = src + self.dropout1(src2)
+        src2 = self.norm2(src)
+        src2 = self.linear2(self.dropout(self.activation(self.linear1(src2))))
+        src = src + self.dropout2(src2)
+        return src
+
+    def forward(
+            self,
+            src,
+            src_mask: Optional[Tensor] = None,
+            src_key_padding_mask: Optional[Tensor] = None,
+            pos: Optional[Tensor] = None,
+    ):
+        if self.normalize_before:
+            return self.forward_pre(src, src_mask, src_key_padding_mask, pos)
+        return self.forward_post(src, src_mask, src_key_padding_mask, pos)
+
+
+class ImageTextTransformer(nn.Module):
+    def __init__(self, layer, num_layers, norm=None):
+        super().__init__()
+        self.layers = _get_clones(layer, num_layers)
+        self.num_layers = num_layers
+        self.norm = norm
+
+    def forward(
+            self,
+            src,
+            mask: Optional[Tensor] = None,
+            src_key_padding_mask: Optional[Tensor] = None,
+            pos: Optional[Tensor] = None,
+    ):
+
+        output = src
+
+        for layer in self.layers:
+            output = layer(output, src_mask=mask, src_key_padding_mask=src_key_padding_mask, pos=pos)
+
+        if self.norm is not None:
+            output = self.norm(output)
+
+        return output
 
 
 def _get_clones(module, N):
@@ -464,7 +564,7 @@ def build_deforamble_transformer(args):
         dim_feedforward=args.dim_feedforward,
         dropout=args.dropout,
         activation="relu",
-        return_intermediate_dec=True,
+        return_intermediate_dec=False,
         num_feature_levels=args.num_feature_levels,
         dec_n_points=args.dec_n_points,
         enc_n_points=args.enc_n_points,

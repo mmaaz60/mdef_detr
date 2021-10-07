@@ -113,8 +113,6 @@ class MDETR(nn.Module):
             self.transformer.decoder.bbox_embed = self.bbox_embed
         else:
             nn.init.constant_(self.bbox_embed.layers[-1].bias.data[2:], -2.0)
-            self.class_embed = nn.ModuleList([self.class_embed for _ in range(num_pred)])
-            self.bbox_embed = nn.ModuleList([self.bbox_embed for _ in range(num_pred)])
             self.transformer.decoder.bbox_embed = None
 
         if contrastive_loss:
@@ -257,39 +255,29 @@ class MDETR(nn.Module):
                     hs = hs[:, :, :-1]
                     out["pred_answer"] = self.answer_head(answer_embeds)
 
-            outputs_classes = []
-            outputs_coords = []
-            for lvl in range(hs.shape[0]):
-                if lvl == 0:
-                    reference = init_reference
-                else:
-                    reference = inter_references[lvl - 1]
-                reference = inverse_sigmoid(reference)
-                outputs_class = self.class_embed[lvl](hs[lvl])
-                tmp = self.bbox_embed[lvl](hs[lvl])
-                if reference.shape[-1] == 4:
-                    tmp += reference
-                else:
-                    assert reference.shape[-1] == 2
-                    tmp[..., :2] += reference
-                outputs_coord = tmp.sigmoid()
-                outputs_classes.append(outputs_class)
-                outputs_coords.append(outputs_coord)
-            outputs_class = torch.stack(outputs_classes)
-            outputs_coord = torch.stack(outputs_coords)
+            reference = inter_references
+            reference = inverse_sigmoid(reference)
+            outputs_class = self.class_embed(hs)
+            tmp = self.bbox_embed(hs)
+            if reference.shape[-1] == 4:
+                tmp += reference
+            else:
+                assert reference.shape[-1] == 2
+                tmp[..., :2] += reference
+            outputs_coord = tmp.sigmoid()
 
             # outputs_class = self.class_embed(hs)
             # outputs_coord = self.bbox_embed(hs).sigmoid()
             out.update(
                 {
-                    "pred_logits": outputs_class[-1],
-                    "pred_boxes": outputs_coord[-1],
+                    "pred_logits": outputs_class,
+                    "pred_boxes": outputs_coord,
                 }
             )
             outputs_isfinal = None
             if self.isfinal_embed is not None:
                 outputs_isfinal = self.isfinal_embed(hs)
-                out["pred_isfinal"] = outputs_isfinal[-1]
+                out["pred_isfinal"] = outputs_isfinal
             proj_queries, proj_tokens = None, None
             if self.contrastive_align_loss:
                 proj_queries = F.normalize(self.contrastive_align_projection_image(hs), p=2, dim=-1)
@@ -824,10 +812,7 @@ def build(args):
 
     backbone = build_backbone(args)
 
-    if args.transformer == "Deformable-DETR":
-        transformer = build_deforamble_transformer(args)
-    else:
-        transformer = build_transformer(args)
+    transformer = build_deforamble_transformer(args)
 
     model = MDETR(
         backbone,
@@ -838,7 +823,7 @@ def build(args):
         aux_loss=args.aux_loss,
         contrastive_hdim=args.contrastive_loss_hdim,
         contrastive_loss=args.contrastive_loss,
-        contrastive_align_loss=args.contrastive_align_loss,
+        contrastive_align_loss=False,
         qa_dataset=qa_dataset,
         split_qa_heads=args.split_qa_heads,
         predict_final=args.predict_final,
