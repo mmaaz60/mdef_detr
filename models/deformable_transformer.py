@@ -267,13 +267,14 @@ class DeformableTransformer(nn.Module):
         hs = torch.cat([hs.permute(1, 0, 2), text_memory], dim=0)
         hs_mask = torch.cat([hs_mask, text_attention_mask], dim=1)
         hs = self.img_text_attn(hs, src_key_padding_mask=hs_mask)
+        text_memory_dec = hs[-len(text_memory):]
         hs = hs[:query_embed.shape[1]]
         hs = hs.permute(1, 0, 2)
 
         inter_references_out = inter_references
         # if self.two_stage:
         #     return hs, init_reference_out, inter_references_out, enc_outputs_class, enc_outputs_coord_unact
-        return hs, init_reference_out, inter_references_out
+        return hs, init_reference_out, inter_references_out, text_memory_dec
 
 
 class DeformableTransformerEncoderLayer(nn.Module):

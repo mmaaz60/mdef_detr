@@ -167,7 +167,7 @@ def get_args_parser():
     )
     parser.add_argument(
         "--dim_feedforward",
-        default=2048,
+        default=1024,
         type=int,
         help="Intermediate size of the feedforward layers in the transformer blocks",
     )
@@ -184,7 +184,7 @@ def get_args_parser():
         type=int,
         help="Number of attention heads inside the transformer's attentions",
     )
-    parser.add_argument("--num_queries", default=100, type=int, help="Number of query slots")
+    parser.add_argument("--num_queries", default=300, type=int, help="Number of query slots")
     parser.add_argument("--pre_norm", action="store_true")
     parser.add_argument(
         "--no_pass_pos_and_query",
@@ -228,9 +228,9 @@ def get_args_parser():
 
     parser.add_argument("--contrastive_loss", action="store_true", help="Whether to add contrastive loss")
     parser.add_argument(
-        "--contrastive_align_loss",
+        "--no_contrastive_align_loss",
         dest="contrastive_align_loss",
-        action="store_true",
+        action="store_false",
         help="Whether to add contrastive alignment loss",
     )
 

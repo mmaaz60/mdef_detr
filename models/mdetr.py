@@ -215,7 +215,7 @@ class MDETR(nn.Module):
 
         else:
             assert memory_cache is not None
-            hs, init_reference, inter_references = self.transformer(
+            hs, init_reference, inter_references, text_memory = self.transformer(
                 masks=memory_cache["mask"],
                 query_embed=memory_cache["query_embed"],
                 pos_embeds=memory_cache["pos_embed"],
@@ -282,7 +282,7 @@ class MDETR(nn.Module):
             if self.contrastive_align_loss:
                 proj_queries = F.normalize(self.contrastive_align_projection_image(hs), p=2, dim=-1)
                 proj_tokens = F.normalize(
-                    self.contrastive_align_projection_text(memory_cache["text_memory"]).transpose(0, 1), p=2, dim=-1
+                    self.contrastive_align_projection_text(text_memory).transpose(0, 1), p=2, dim=-1
                 )
                 out.update(
                     {
@@ -823,7 +823,7 @@ def build(args):
         aux_loss=args.aux_loss,
         contrastive_hdim=args.contrastive_loss_hdim,
         contrastive_loss=args.contrastive_loss,
-        contrastive_align_loss=False,
+        contrastive_align_loss=args.contrastive_align_loss,
         qa_dataset=qa_dataset,
         split_qa_heads=args.split_qa_heads,
         predict_final=args.predict_final,
