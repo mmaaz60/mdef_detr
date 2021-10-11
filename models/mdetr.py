@@ -113,6 +113,8 @@ class MDETR(nn.Module):
             self.transformer.decoder.bbox_embed = self.bbox_embed
         else:
             nn.init.constant_(self.bbox_embed.layers[-1].bias.data[2:], -2.0)
+            self.class_embed = nn.ModuleList([self.class_embed for _ in range(transformer.img_text_attn.num_layers)])
+            self.bbox_embed = nn.ModuleList([self.bbox_embed for _ in range(transformer.img_text_attn.num_layers)])
             self.transformer.decoder.bbox_embed = None
 
         if contrastive_loss:
@@ -255,39 +257,49 @@ class MDETR(nn.Module):
                     hs = hs[:, :, :-1]
                     out["pred_answer"] = self.answer_head(answer_embeds)
 
-            reference = inter_references
-            reference = inverse_sigmoid(reference)
-            outputs_class = self.class_embed(hs)
-            tmp = self.bbox_embed(hs)
-            if reference.shape[-1] == 4:
-                tmp += reference
-            else:
-                assert reference.shape[-1] == 2
-                tmp[..., :2] += reference
-            outputs_coord = tmp.sigmoid()
+            outputs_classes = []
+            outputs_coords = []
+            for lvl in range(hs.shape[0]):
+                if lvl == 0:
+                    reference = init_reference
+                else:
+                    reference = inter_references[lvl - 1]
+                reference = inverse_sigmoid(reference)
+                outputs_class = self.class_embed[lvl](hs[lvl])
+                tmp = self.bbox_embed[lvl](hs[lvl])
+                if reference.shape[-1] == 4:
+                    tmp += reference
+                else:
+                    assert reference.shape[-1] == 2
+                    tmp[..., :2] += reference
+                outputs_coord = tmp.sigmoid()
+                outputs_classes.append(outputs_class)
+                outputs_coords.append(outputs_coord)
+            outputs_class = torch.stack(outputs_classes)
+            outputs_coord = torch.stack(outputs_coords)
 
             # outputs_class = self.class_embed(hs)
             # outputs_coord = self.bbox_embed(hs).sigmoid()
             out.update(
                 {
-                    "pred_logits": outputs_class,
-                    "pred_boxes": outputs_coord,
+                    "pred_logits": outputs_class[-1],
+                    "pred_boxes": outputs_coord[-1],
                 }
             )
             outputs_isfinal = None
             if self.isfinal_embed is not None:
                 outputs_isfinal = self.isfinal_embed(hs)
-                out["pred_isfinal"] = outputs_isfinal
+                out["pred_isfinal"] = outputs_isfinal[-1]
             proj_queries, proj_tokens = None, None
             if self.contrastive_align_loss:
                 proj_queries = F.normalize(self.contrastive_align_projection_image(hs), p=2, dim=-1)
                 proj_tokens = F.normalize(
-                    self.contrastive_align_projection_text(text_memory).transpose(0, 1), p=2, dim=-1
+                    self.contrastive_align_projection_text(text_memory).transpose(1, 2), p=2, dim=-1
                 )
                 out.update(
                     {
                         "proj_queries": proj_queries[-1],
-                        "proj_tokens": proj_tokens,
+                        "proj_tokens": proj_tokens[-1],
                         "tokenized": memory_cache["tokenized"],
                     }
                 )
@@ -299,10 +311,11 @@ class MDETR(nn.Module):
                             "pred_logits": a,
                             "pred_boxes": b,
                             "proj_queries": c,
-                            "proj_tokens": proj_tokens,
+                            "proj_tokens": d,
                             "tokenized": memory_cache["tokenized"],
                         }
-                        for a, b, c in zip(outputs_class[:-1], outputs_coord[:-1], proj_queries[:-1])
+                        for a, b, c, d in zip(outputs_class[:-1], outputs_coord[:-1],
+                                              proj_queries[:-1], proj_tokens[:-1])
                     ]
                 else:
                     out["aux_outputs"] = [

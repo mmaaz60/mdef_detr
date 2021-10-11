@@ -213,9 +213,9 @@ def get_args_parser():
 
     # Loss
     parser.add_argument(
-        "--aux_loss",
+        "--no_aux_loss",
         dest="aux_loss",
-        action="store_true",
+        action="store_false",
         help="Disables auxiliary decoding losses (loss at each layer)",
     )
     parser.add_argument(

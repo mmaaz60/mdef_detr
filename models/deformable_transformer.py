@@ -50,7 +50,7 @@ class DeformableTransformer(nn.Module):
         self.decoder = DeformableTransformerDecoder(decoder_layer, num_decoder_layers, return_intermediate_dec)
 
         img_text_layer = ImageTextTransformerLayer(d_model, 8, dim_feedforward, dropout, activation)
-        self.img_text_attn = ImageTextTransformer(img_text_layer, 4, nn.LayerNorm(d_model))
+        self.img_text_attn = ImageTextTransformer(img_text_layer, 4)
 
         self.level_embed = nn.Parameter(torch.Tensor(num_feature_levels, d_model))
 
@@ -267,14 +267,13 @@ class DeformableTransformer(nn.Module):
         hs = torch.cat([hs.permute(1, 0, 2), text_memory], dim=0)
         hs_mask = torch.cat([hs_mask, text_attention_mask], dim=1)
         hs = self.img_text_attn(hs, src_key_padding_mask=hs_mask)
-        text_memory_dec = hs[-len(text_memory):]
-        hs = hs[:query_embed.shape[1]]
-        hs = hs.permute(1, 0, 2)
+        text_memory_dec = [h[-len(text_memory):] for h in hs]
+        hs = [h[:query_embed.shape[1]].permute(1, 0, 2) for h in hs]
 
-        inter_references_out = inter_references
+        inter_references_out = [inter_references for i in range(len(hs))]
         # if self.two_stage:
         #     return hs, init_reference_out, inter_references_out, enc_outputs_class, enc_outputs_coord_unact
-        return hs, init_reference_out, inter_references_out, text_memory_dec
+        return torch.stack(hs), init_reference_out, torch.stack(inter_references_out), torch.stack(text_memory_dec)
 
 
 class DeformableTransformerEncoderLayer(nn.Module):
@@ -519,11 +518,12 @@ class ImageTextTransformerLayer(nn.Module):
 
 
 class ImageTextTransformer(nn.Module):
-    def __init__(self, layer, num_layers, norm=None):
+    def __init__(self, layer, num_layers, norm=None, return_intermediate=True):
         super().__init__()
         self.layers = _get_clones(layer, num_layers)
         self.num_layers = num_layers
         self.norm = norm
+        self.return_intermediate = return_intermediate
 
     def forward(
             self,
@@ -535,13 +535,18 @@ class ImageTextTransformer(nn.Module):
 
         output = src
 
+        all_outputs = []
         for layer in self.layers:
             output = layer(output, src_mask=mask, src_key_padding_mask=src_key_padding_mask, pos=pos)
+            all_outputs.append(output)
 
         if self.norm is not None:
-            output = self.norm(output)
+            all_outputs = [self.norm(o) for o in all_outputs]
 
-        return output
+        if self.return_intermediate:
+            return all_outputs
+        else:
+            return all_outputs[-1]
 
 
 def _get_clones(module, N):
