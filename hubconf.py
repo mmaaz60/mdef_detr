@@ -70,7 +70,7 @@ def _make_deformabledetr(
 ):
     hidden_dim = 256
     backbone = _make_backbone(backbone_name, mask)
-    transformer = DeformableTransformer(d_model=hidden_dim, return_intermediate_dec=True, num_feature_levels=4,
+    transformer = DeformableTransformer(d_model=hidden_dim, return_intermediate_dec=False, num_feature_levels=4,
                                         dim_feedforward=2048, two_stage_num_proposals=100,
                                         text_encoder_type=text_encoder)
     detr = MDETR(
