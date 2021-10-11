@@ -62,11 +62,11 @@ def _make_detr(
 def _make_deformabledetr(
         backbone_name: str,
         num_queries=100,
-        mask=False,
+        mask=True,
         qa_dataset=None,
         predict_final=False,
         text_encoder="roberta-base",
-        contrastive_align_loss=True,
+        contrastive_align_loss=False,
 ):
     hidden_dim = 256
     backbone = _make_backbone(backbone_name, mask)
@@ -84,8 +84,8 @@ def _make_deformabledetr(
         contrastive_align_loss=contrastive_align_loss,
         contrastive_hdim=64,
     )
-    if mask:
-        return DETRsegm(detr)
+#     if mask:
+#         return DETRsegm(detr)
     return detr
 
 
