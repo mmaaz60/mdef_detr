@@ -61,17 +61,17 @@ def _make_detr(
 
 def _make_deformabledetr(
         backbone_name: str,
-        num_queries=100,
+        num_queries=300,
         mask=True,
         qa_dataset=None,
         predict_final=False,
         text_encoder="roberta-base",
-        contrastive_align_loss=False,
+        contrastive_align_loss=True,
 ):
     hidden_dim = 256
     backbone = _make_backbone(backbone_name, mask)
     transformer = DeformableTransformer(d_model=hidden_dim, return_intermediate_dec=False, num_feature_levels=4,
-                                        dim_feedforward=2048, two_stage_num_proposals=100,
+                                        dim_feedforward=1024, two_stage_num_proposals=300,
                                         text_encoder_type=text_encoder)
     detr = MDETR(
         backbone,
