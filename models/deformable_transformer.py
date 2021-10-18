@@ -50,7 +50,7 @@ class DeformableTransformer(nn.Module):
         self.decoder = DeformableTransformerDecoder(decoder_layer, num_decoder_layers, return_intermediate_dec)
 
         img_text_layer = ImageTextTransformerLayer(d_model, 8, dim_feedforward, dropout, activation)
-        self.img_text_attn = ImageTextTransformer(img_text_layer, 4)
+        self.img_text_attn = ImageTextTransformer(img_text_layer, 6)
 
         self.level_embed = nn.Parameter(torch.Tensor(num_feature_levels, d_model))
 

@@ -66,7 +66,7 @@ def _make_deformabledetr(
         qa_dataset=None,
         predict_final=False,
         text_encoder="roberta-base",
-        contrastive_align_loss=True,
+        contrastive_align_loss=False,
 ):
     hidden_dim = 256
     backbone = _make_backbone(backbone_name, mask)
