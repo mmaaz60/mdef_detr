@@ -104,7 +104,7 @@ def get_args_parser():
         type=str,
         choices=("step", "multistep", "linear_with_warmup", "all_linear_with_warmup"),
     )
-    parser.add_argument("--ema", action="store_true")
+    parser.add_argument("--no_ema", dest="ema", action="store_false")
     parser.add_argument("--ema_decay", type=float, default=0.9998)
     parser.add_argument("--fraction_warmup_steps", default=0.01, type=float, help="Fraction of total number of steps")
 
@@ -194,7 +194,7 @@ def get_args_parser():
     )
 
     # Transformer: deformable detr
-    parser.add_argument('--transformer', default="DETR", type=str, help='Type of transformer (DETR, Deformable-DETR')
+    parser.add_argument('--transformer', default="Deformable-DETR", type=str, help='Type of transformer (DETR, Deformable-DETR')
     parser.add_argument('--num_feature_levels', default=4, type=int, help='number of feature levels')
     parser.add_argument('--dec_n_points', default=4, type=int)
     parser.add_argument('--enc_n_points', default=4, type=int)
