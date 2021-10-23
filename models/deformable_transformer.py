@@ -163,6 +163,7 @@ class DeformableTransformer(nn.Module):
             spatial_shapes=None,
             level_start_index=None,
             valid_ratios=None,
+            last_level_img_memory=None,
     ):
         assert self.two_stage or query_embed is not None
 
@@ -214,6 +215,9 @@ class DeformableTransformer(nn.Module):
             # encoder
             img_memory = self.encoder(src_flatten, spatial_shapes, level_start_index, valid_ratios,
                                       lvl_pos_embed_flatten, mask_flatten)
+            # Extract the last level encoded feature map
+            last_lvl_img_memory = img_memory[:, -(h * w):]
+            last_lvl_img_memory_mask = mask_flatten[:, -(h * w):]
 
             memory_cache = {
                 "text_memory_resized": text_memory_resized,
@@ -228,6 +232,7 @@ class DeformableTransformer(nn.Module):
                 "spatial_shapes": spatial_shapes,
                 "level_start_index": level_start_index,
                 "valid_ratios": valid_ratios,
+                "last_level_img_memory": [last_lvl_img_memory, last_lvl_img_memory_mask],
             }
             return memory_cache
 
@@ -266,8 +271,13 @@ class DeformableTransformer(nn.Module):
         hs_mask = torch.zeros((hs.shape[0], hs.shape[1]), dtype=torch.bool, device=hs.device)
         hs = torch.cat([hs.permute(1, 0, 2), text_memory], dim=0)
         hs_mask = torch.cat([hs_mask, text_attention_mask], dim=1)
+        # Concatenate last level encoded feature map
+        mem, mask = last_level_img_memory
+        hs = torch.cat([hs, mem.permute(1, 0, 2)], dim=0)
+        hs_mask = torch.cat([hs_mask, mask], dim=1)
+        # Pass it to the img_text transformer
         hs = self.img_text_attn(hs, src_key_padding_mask=hs_mask)
-        text_memory_dec = [h[-len(text_memory):] for h in hs]
+        text_memory_dec = [h[query_embed.shape[1]:query_embed.shape[1] + len(text_memory)] for h in hs]
         hs = [h[:query_embed.shape[1]].permute(1, 0, 2) for h in hs]
 
         inter_references_out = [inter_references for i in range(len(hs))]
