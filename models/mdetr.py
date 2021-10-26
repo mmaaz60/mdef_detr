@@ -228,7 +228,6 @@ class MDETR(nn.Module):
                 spatial_shapes=memory_cache["spatial_shapes"],
                 level_start_index=memory_cache["level_start_index"],
                 valid_ratios=memory_cache["valid_ratios"],
-                last_level_img_memory=memory_cache["last_level_img_memory"],
             )
 
             out = {}
