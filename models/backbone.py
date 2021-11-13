@@ -152,16 +152,23 @@ class TimmBackbone(nn.Module):
 
         with torch.no_grad():
             replace_bn(backbone)
-        num_channels = backbone.feature_info.channels()[-1]
-        self.body = backbone
-        self.num_channels = num_channels
+        num_channels = backbone.feature_info.channels()
         self.interm = return_interm_layers
+        self.body = backbone
         self.main_layer = main_layer
+        if self.interm:
+            self.num_channels = num_channels[-3:]
+            self.strides = [1, 1, 1]  # Just to make the code work
+        else:
+            self.strides = [1]  # Just to make the code work
+            self.num_channels = [num_channels[-1]]
 
     def forward(self, tensor_list):
         xs = self.body(tensor_list.tensors)
         if not self.interm:
             xs = [xs[self.main_layer]]
+        else:
+            xs = xs[-3:]
         out = OrderedDict()
         for i, x in enumerate(xs):
             mask = F.interpolate(tensor_list.mask[None].float(), size=x.shape[-2:]).bool()[0]
