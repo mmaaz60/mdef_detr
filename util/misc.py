@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional
 
 import torch
 import torchvision
+import torch.distributed as dist
 from torch import Tensor
 
 
@@ -50,7 +51,7 @@ def collate_fn(do_round, batch):
         cur_count = 0
         for v in batch[1]:
             cur_pos = v["positive_map"]
-            batched_pos_map[cur_count : cur_count + len(cur_pos), : cur_pos.shape[1]] = cur_pos
+            batched_pos_map[cur_count: cur_count + len(cur_pos), : cur_pos.shape[1]] = cur_pos
             cur_count += len(cur_pos)
 
         assert cur_count == len(batched_pos_map)
@@ -66,7 +67,7 @@ def collate_fn(do_round, batch):
         cur_count = 0
         for v in batch[1]:
             cur_pos = v["positive_map_eval"]
-            batched_pos_map[cur_count : cur_count + len(cur_pos), : cur_pos.shape[1]] = cur_pos
+            batched_pos_map[cur_count: cur_count + len(cur_pos), : cur_pos.shape[1]] = cur_pos
             cur_count += len(cur_pos)
 
         assert cur_count == len(batched_pos_map)
@@ -139,11 +140,11 @@ def interpolate(input, size=None, scale_factor=None, mode="nearest", align_corne
 
     if input.shape[1] == 0:
         # Pytorch doesn't support null dimension on the channel dimension, so we transpose to fake a null batch dim
-        return torch.nn.functional.interpolate(input.transpose(0, 1), size, scale_factor, mode, align_corners).transpose(0, 1)
+        return torch.nn.functional.interpolate(input.transpose(0, 1), size, scale_factor, mode,
+                                               align_corners).transpose(0, 1)
 
     # empty batch dimension is now supported in pytorch
     return torch.nn.functional.interpolate(input, size, scale_factor, mode, align_corners)
-
 
 
 def targets_to(targets: List[Dict[str, Any]], device):
@@ -160,3 +161,28 @@ def targets_to(targets: List[Dict[str, Any]], device):
         "original_id",
     ]
     return [{k: v.to(device) if k not in excluded_keys else v for k, v in t.items() if k != "caption"} for t in targets]
+
+
+def inverse_sigmoid(x, eps=1e-5):
+    x = x.clamp(min=0, max=1)
+    x1 = x.clamp(min=eps)
+    x2 = (1 - x).clamp(min=eps)
+    return torch.log(x1 / x2)
+
+
+def is_dist_avail_and_initialized():
+    if not dist.is_available():
+        return False
+    if not dist.is_initialized():
+        return False
+    return True
+
+
+def get_rank():
+    if not is_dist_avail_and_initialized():
+        return 0
+    return dist.get_rank()
+
+
+def is_main_process():
+    return get_rank() == 0

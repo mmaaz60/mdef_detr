@@ -104,7 +104,7 @@ def get_args_parser():
         type=str,
         choices=("step", "multistep", "linear_with_warmup", "all_linear_with_warmup"),
     )
-    parser.add_argument("--ema", action="store_true")
+    parser.add_argument("--no_ema", dest="ema", action="store_false")
     parser.add_argument("--ema_decay", type=float, default=0.9998)
     parser.add_argument("--fraction_warmup_steps", default=0.01, type=float, help="Fraction of total number of steps")
 
@@ -167,7 +167,7 @@ def get_args_parser():
     )
     parser.add_argument(
         "--dim_feedforward",
-        default=2048,
+        default=1024,
         type=int,
         help="Intermediate size of the feedforward layers in the transformer blocks",
     )
@@ -184,7 +184,7 @@ def get_args_parser():
         type=int,
         help="Number of attention heads inside the transformer's attentions",
     )
-    parser.add_argument("--num_queries", default=100, type=int, help="Number of query slots")
+    parser.add_argument("--num_queries", default=300, type=int, help="Number of query slots")
     parser.add_argument("--pre_norm", action="store_true")
     parser.add_argument(
         "--no_pass_pos_and_query",
@@ -192,6 +192,13 @@ def get_args_parser():
         action="store_false",
         help="Disables passing the positional encodings to each attention layers",
     )
+
+    # Transformer: deformable detr
+    parser.add_argument('--transformer', default="Deformable-DETR", type=str, help='Type of transformer (DETR, Deformable-DETR')
+    parser.add_argument('--num_feature_levels', default=4, type=int, help='number of feature levels')
+    parser.add_argument('--dec_n_points', default=4, type=int)
+    parser.add_argument('--enc_n_points', default=4, type=int)
+    parser.add_argument('--two_stage', default=False, action='store_true')
 
     # Segmentation
     parser.add_argument(
@@ -221,9 +228,9 @@ def get_args_parser():
 
     parser.add_argument("--contrastive_loss", action="store_true", help="Whether to add contrastive loss")
     parser.add_argument(
-        "--no_contrastive_align_loss",
+        "--contrastive_align_loss",
         dest="contrastive_align_loss",
-        action="store_false",
+        action="store_true",
         help="Whether to add contrastive alignment loss",
     )
 

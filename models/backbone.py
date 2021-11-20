@@ -13,7 +13,7 @@ from torch import nn
 from torchvision.models._utils import IntermediateLayerGetter
 from models.swin_transformers.swin_transformers import get_swin_backbone
 
-from util.misc import NestedTensor
+from util.misc import NestedTensor, is_main_process
 
 from .position_encoding import build_position_encoding
 
@@ -59,17 +59,21 @@ class FrozenBatchNorm2d(torch.nn.Module):
 
 
 class BackboneBase(nn.Module):
-    def __init__(self, backbone: nn.Module, train_backbone: bool, num_channels: int, return_interm_layers: bool):
+    def __init__(self, backbone: nn.Module, train_backbone: bool, return_interm_layers: bool):
         super().__init__()
         for name, parameter in backbone.named_parameters():
             if not train_backbone or "layer2" not in name and "layer3" not in name and "layer4" not in name:
                 parameter.requires_grad_(False)
         if return_interm_layers:
-            return_layers = {"layer1": "0", "layer2": "1", "layer3": "2", "layer4": "3"}
+            # return_layers = {"layer1": "0", "layer2": "1", "layer3": "2", "layer4": "3"}
+            return_layers = {"layer2": "0", "layer3": "1", "layer4": "2"}
+            self.strides = [8, 16, 32]
+            self.num_channels = [512, 1024, 2048]
         else:
-            return_layers = {"layer4": 0}
+            return_layers = {'layer4': "0"}
+            self.strides = [32]
+            self.num_channels = [2048]
         self.body = IntermediateLayerGetter(backbone, return_layers=return_layers)
-        self.num_channels = num_channels
 
     def forward(self, tensor_list):
         xs = self.body(tensor_list.tensors)
@@ -85,10 +89,13 @@ class Backbone(BackboneBase):
 
     def __init__(self, name: str, train_backbone: bool, return_interm_layers: bool, dilation: bool):
         backbone = getattr(torchvision.models, name)(
-            replace_stride_with_dilation=[False, False, dilation], pretrained=True, norm_layer=FrozenBatchNorm2d
+            replace_stride_with_dilation=[False, False, dilation],
+            pretrained=is_main_process(), norm_layer=FrozenBatchNorm2d
         )
-        num_channels = 512 if name in ("resnet18", "resnet34") else 2048
-        super().__init__(backbone, train_backbone, num_channels, return_interm_layers)
+        # num_channels = 512 if name in ("resnet18", "resnet34") else 2048
+        super().__init__(backbone, train_backbone, return_interm_layers)
+        if dilation:
+            self.strides[-1] = self.strides[-1] // 2
 
 
 class GroupNorm32(torch.nn.GroupNorm):
@@ -145,16 +152,23 @@ class TimmBackbone(nn.Module):
 
         with torch.no_grad():
             replace_bn(backbone)
-        num_channels = backbone.feature_info.channels()[-1]
-        self.body = backbone
-        self.num_channels = num_channels
+        num_channels = backbone.feature_info.channels()
         self.interm = return_interm_layers
+        self.body = backbone
         self.main_layer = main_layer
+        if self.interm:
+            self.num_channels = num_channels[-3:]
+            self.strides = [1, 1, 1]  # Just to make the code work
+        else:
+            self.strides = [1]  # Just to make the code work
+            self.num_channels = [num_channels[-1]]
 
     def forward(self, tensor_list):
         xs = self.body(tensor_list.tensors)
         if not self.interm:
             xs = [xs[self.main_layer]]
+        else:
+            xs = xs[-3:]
         out = OrderedDict()
         for i, x in enumerate(xs):
             mask = F.interpolate(tensor_list.mask[None].float(), size=x.shape[-2:]).bool()[0]
@@ -191,6 +205,8 @@ class SwinBackbone(nn.Module):
 class Joiner(nn.Sequential):
     def __init__(self, backbone, position_embedding):
         super().__init__(backbone, position_embedding)
+        self.strides = backbone.strides
+        self.num_channels = backbone.num_channels
 
     def forward(self, tensor_list):
         xs = self[0](tensor_list)
@@ -207,7 +223,7 @@ class Joiner(nn.Sequential):
 def build_backbone(args):
     position_embedding = build_position_encoding(args)
     train_backbone = args.lr_backbone > 0
-    return_interm_layers = args.masks
+    return_interm_layers = args.masks or (args.num_feature_levels > 1)
     if args.backbone[: len("timm_")] == "timm_":
         backbone = TimmBackbone(
             args.backbone[len("timm_"):],

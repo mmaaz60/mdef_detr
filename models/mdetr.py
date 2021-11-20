@@ -13,31 +13,40 @@ from torch import nn
 import util.dist as dist
 from util import box_ops
 from util.metrics import accuracy
-from util.misc import NestedTensor, interpolate
+from util.misc import NestedTensor, interpolate, inverse_sigmoid
 
 from .backbone import build_backbone
 from .matcher import build_matcher
 from .postprocessors import build_postprocessors
 from .segmentation import DETRsegm, dice_loss, sigmoid_focal_loss
 from .transformer import build_transformer
+from .deformable_transformer import build_deforamble_transformer
+import copy
+
+
+def _get_clones(module, N):
+    return nn.ModuleList([copy.deepcopy(module) for i in range(N)])
 
 
 class MDETR(nn.Module):
     """ This is the MDETR module that performs modulated object detection """
 
     def __init__(
-        self,
-        backbone,
-        transformer,
-        num_classes,
-        num_queries,
-        aux_loss=False,
-        contrastive_hdim=64,
-        contrastive_loss=False,
-        contrastive_align_loss=False,
-        qa_dataset: Optional[str] = None,
-        split_qa_heads=True,
-        predict_final=False,
+            self,
+            backbone,
+            transformer,
+            num_classes,
+            num_queries,
+            num_feature_levels,
+            with_box_refine=False,
+            two_stage=False,
+            aux_loss=False,
+            contrastive_hdim=64,
+            contrastive_loss=False,
+            contrastive_align_loss=False,
+            qa_dataset: Optional[str] = None,
+            split_qa_heads=True,
+            predict_final=False,
     ):
         """Initializes the model.
 
@@ -63,15 +72,51 @@ class MDETR(nn.Module):
         self.class_embed = nn.Linear(hidden_dim, num_classes + 1)
         self.isfinal_embed = nn.Linear(hidden_dim, 1) if predict_final else None
         self.bbox_embed = MLP(hidden_dim, hidden_dim, 4, 3)
-        self.query_embed = nn.Embedding(num_queries, hidden_dim)
+        self.query_embed = nn.Embedding(num_queries, 2*hidden_dim)
+        self.num_feature_levels = num_feature_levels
         if qa_dataset is not None:
             nb_heads = 6 if qa_dataset == "gqa" else 4
             self.qa_embed = nn.Embedding(nb_heads if split_qa_heads else 1, hidden_dim)
 
-        self.input_proj = nn.Conv2d(backbone.num_channels, hidden_dim, kernel_size=1)
+        if num_feature_levels > 1:
+            num_backbone_outs = len(backbone.strides)
+            input_proj_list = []
+            for _ in range(num_backbone_outs):
+                in_channels = backbone.num_channels[_]
+                input_proj_list.append(nn.Sequential(
+                    nn.Conv2d(in_channels, hidden_dim, kernel_size=1),
+                    nn.GroupNorm(32, hidden_dim),
+                ))
+            for _ in range(num_feature_levels - num_backbone_outs):
+                input_proj_list.append(nn.Sequential(
+                    nn.Conv2d(in_channels, hidden_dim, kernel_size=3, stride=2, padding=1),
+                    nn.GroupNorm(32, hidden_dim),
+                ))
+                in_channels = hidden_dim
+            self.input_proj = nn.ModuleList(input_proj_list)
+        else:
+            self.input_proj = nn.ModuleList([
+                nn.Sequential(
+                    nn.Conv2d(backbone.num_channels[0], hidden_dim, kernel_size=1),
+                    nn.GroupNorm(32, hidden_dim),
+                )])
         self.backbone = backbone
         self.aux_loss = aux_loss
         self.contrastive_loss = contrastive_loss
+
+        num_pred = (transformer.decoder.num_layers + 1) if two_stage else transformer.decoder.num_layers
+        if with_box_refine:
+            self.class_embed = _get_clones(self.class_embed, num_pred)
+            self.bbox_embed = _get_clones(self.bbox_embed, num_pred)
+            nn.init.constant_(self.bbox_embed[0].layers[-1].bias.data[2:], -2.0)
+            # hack implementation for iterative bounding box refinement
+            self.transformer.decoder.bbox_embed = self.bbox_embed
+        else:
+            nn.init.constant_(self.bbox_embed.layers[-1].bias.data[2:], -2.0)
+            self.class_embed = nn.ModuleList([self.class_embed for _ in range(transformer.img_text_attn.num_layers)])
+            self.bbox_embed = nn.ModuleList([self.bbox_embed for _ in range(transformer.img_text_attn.num_layers)])
+            self.transformer.decoder.bbox_embed = None
+
         if contrastive_loss:
             self.contrastive_projection_image = nn.Linear(hidden_dim, contrastive_hdim, bias=False)
             self.contrastive_projection_text = nn.Linear(
@@ -127,15 +172,36 @@ class MDETR(nn.Module):
         if encode_and_save:
             assert memory_cache is None
             features, pos = self.backbone(samples)
-            src, mask = features[-1].decompose()
+
+            srcs = []
+            masks = []
+            for l, feat in enumerate(features):
+                src, mask = feat.decompose()
+                srcs.append(self.input_proj[l](src))
+                masks.append(mask)
+                assert mask is not None
+            if self.num_feature_levels > len(srcs):
+                _len_srcs = len(srcs)
+                for l in range(_len_srcs, self.num_feature_levels):
+                    if l == _len_srcs:
+                        src = self.input_proj[l](features[-1].tensors)
+                    else:
+                        src = self.input_proj[l](srcs[-1])
+                    m = samples.mask
+                    mask = F.interpolate(m[None].float(), size=src.shape[-2:]).to(torch.bool)[0]
+                    pos_l = self.backbone[1](NestedTensor(src, mask)).to(src.dtype)
+                    srcs.append(src)
+                    masks.append(mask)
+                    pos.append(pos_l)
+            # src, mask = features[-1].decompose()
             query_embed = self.query_embed.weight
             if self.qa_dataset is not None:
                 query_embed = torch.cat([query_embed, self.qa_embed.weight], 0)
             memory_cache = self.transformer(
-                self.input_proj(src),
-                mask,
+                srcs,
+                masks,
                 query_embed,
-                pos[-1],
+                pos,
                 captions,
                 encode_and_save=True,
                 text_memory=None,
@@ -151,15 +217,19 @@ class MDETR(nn.Module):
 
         else:
             assert memory_cache is not None
-            hs = self.transformer(
-                mask=memory_cache["mask"],
+            hs, init_reference, inter_references, text_memory = self.transformer(
+                masks=memory_cache["mask"],
                 query_embed=memory_cache["query_embed"],
-                pos_embed=memory_cache["pos_embed"],
+                pos_embeds=memory_cache["pos_embed"],
                 encode_and_save=False,
                 text_memory=memory_cache["text_memory_resized"],
                 img_memory=memory_cache["img_memory"],
                 text_attention_mask=memory_cache["text_attention_mask"],
+                spatial_shapes=memory_cache["spatial_shapes"],
+                level_start_index=memory_cache["level_start_index"],
+                valid_ratios=memory_cache["valid_ratios"],
             )
+
             out = {}
             if self.qa_dataset is not None:
                 if self.split_qa_heads:
@@ -187,8 +257,29 @@ class MDETR(nn.Module):
                     hs = hs[:, :, :-1]
                     out["pred_answer"] = self.answer_head(answer_embeds)
 
-            outputs_class = self.class_embed(hs)
-            outputs_coord = self.bbox_embed(hs).sigmoid()
+            outputs_classes = []
+            outputs_coords = []
+            for lvl in range(hs.shape[0]):
+                if lvl == 0:
+                    reference = init_reference
+                else:
+                    reference = inter_references[lvl - 1]
+                reference = inverse_sigmoid(reference)
+                outputs_class = self.class_embed[lvl](hs[lvl])
+                tmp = self.bbox_embed[lvl](hs[lvl])
+                if reference.shape[-1] == 4:
+                    tmp += reference
+                else:
+                    assert reference.shape[-1] == 2
+                    tmp[..., :2] += reference
+                outputs_coord = tmp.sigmoid()
+                outputs_classes.append(outputs_class)
+                outputs_coords.append(outputs_coord)
+            outputs_class = torch.stack(outputs_classes)
+            outputs_coord = torch.stack(outputs_coords)
+
+            # outputs_class = self.class_embed(hs)
+            # outputs_coord = self.bbox_embed(hs).sigmoid()
             out.update(
                 {
                     "pred_logits": outputs_class[-1],
@@ -203,12 +294,12 @@ class MDETR(nn.Module):
             if self.contrastive_align_loss:
                 proj_queries = F.normalize(self.contrastive_align_projection_image(hs), p=2, dim=-1)
                 proj_tokens = F.normalize(
-                    self.contrastive_align_projection_text(memory_cache["text_memory"]).transpose(0, 1), p=2, dim=-1
+                    self.contrastive_align_projection_text(text_memory).transpose(1, 2), p=2, dim=-1
                 )
                 out.update(
                     {
                         "proj_queries": proj_queries[-1],
-                        "proj_tokens": proj_tokens,
+                        "proj_tokens": proj_tokens[-1],
                         "tokenized": memory_cache["tokenized"],
                     }
                 )
@@ -220,10 +311,11 @@ class MDETR(nn.Module):
                             "pred_logits": a,
                             "pred_boxes": b,
                             "proj_queries": c,
-                            "proj_tokens": proj_tokens,
+                            "proj_tokens": d,
                             "tokenized": memory_cache["tokenized"],
                         }
-                        for a, b, c in zip(outputs_class[:-1], outputs_coord[:-1], proj_queries[:-1])
+                        for a, b, c, d in zip(outputs_class[:-1], outputs_coord[:-1],
+                                              proj_queries[:-1], proj_tokens[:-1])
                     ]
                 else:
                     out["aux_outputs"] = [
@@ -287,10 +379,10 @@ class QACriterionGQA(nn.Module):
         ## OBJ type
         obj_norm = is_obj.sum() if is_obj.any() else 1.0
         loss["loss_answer_obj"] = (
-            F.cross_entropy(output["pred_answer_obj"], answers["answer_obj"], reduction="none")
-            .masked_fill(~is_obj, 0)
-            .sum()
-            / obj_norm
+                F.cross_entropy(output["pred_answer_obj"], answers["answer_obj"], reduction="none")
+                .masked_fill(~is_obj, 0)
+                .sum()
+                / obj_norm
         )
         obj_acc = (output["pred_answer_obj"].argmax(-1)) == answers["answer_obj"]
         loss["accuracy_answer_obj"] = (
@@ -300,10 +392,10 @@ class QACriterionGQA(nn.Module):
         ## ATTR type
         attr_norm = is_attr.sum() if is_attr.any() else 1.0
         loss["loss_answer_attr"] = (
-            F.cross_entropy(output["pred_answer_attr"], answers["answer_attr"], reduction="none")
-            .masked_fill(~is_attr, 0)
-            .sum()
-            / attr_norm
+                F.cross_entropy(output["pred_answer_attr"], answers["answer_attr"], reduction="none")
+                .masked_fill(~is_attr, 0)
+                .sum()
+                / attr_norm
         )
         attr_acc = (output["pred_answer_attr"].argmax(-1)) == answers["answer_attr"]
         loss["accuracy_answer_attr"] = (
@@ -313,10 +405,10 @@ class QACriterionGQA(nn.Module):
         ## REL type
         rel_norm = is_rel.sum() if is_rel.any() else 1.0
         loss["loss_answer_rel"] = (
-            F.cross_entropy(output["pred_answer_rel"], answers["answer_rel"], reduction="none")
-            .masked_fill(~is_rel, 0)
-            .sum()
-            / rel_norm
+                F.cross_entropy(output["pred_answer_rel"], answers["answer_rel"], reduction="none")
+                .masked_fill(~is_rel, 0)
+                .sum()
+                / rel_norm
         )
         rel_acc = (output["pred_answer_rel"].argmax(-1)) == answers["answer_rel"]
         loss["accuracy_answer_rel"] = (
@@ -326,10 +418,10 @@ class QACriterionGQA(nn.Module):
         ## GLOBAL type
         global_norm = is_global.sum() if is_global.any() else 1.0
         loss["loss_answer_global"] = (
-            F.cross_entropy(output["pred_answer_global"], answers["answer_global"], reduction="none")
-            .masked_fill(~is_global, 0)
-            .sum()
-            / global_norm
+                F.cross_entropy(output["pred_answer_global"], answers["answer_global"], reduction="none")
+                .masked_fill(~is_global, 0)
+                .sum()
+                / global_norm
         )
         global_acc = (output["pred_answer_global"].argmax(-1)) == answers["answer_global"]
         loss["accuracy_answer_global"] = (
@@ -339,10 +431,10 @@ class QACriterionGQA(nn.Module):
         ## CAT type
         cat_norm = is_cat.sum() if is_cat.any() else 1.0
         loss["loss_answer_cat"] = (
-            F.cross_entropy(output["pred_answer_cat"], answers["answer_cat"], reduction="none")
-            .masked_fill(~is_cat, 0)
-            .sum()
-            / cat_norm
+                F.cross_entropy(output["pred_answer_cat"], answers["answer_cat"], reduction="none")
+                .masked_fill(~is_cat, 0)
+                .sum()
+                / cat_norm
         )
         cat_acc = (output["pred_answer_cat"].argmax(-1)) == answers["answer_cat"]
         loss["accuracy_answer_cat"] = (
@@ -350,9 +442,10 @@ class QACriterionGQA(nn.Module):
         )
 
         loss["accuracy_answer_total"] = (
-            type_acc
-            * (is_obj * obj_acc + is_rel * rel_acc + is_attr * attr_acc + is_global * global_acc + is_cat * cat_acc)
-        ).sum() / type_acc.numel()
+                                                type_acc
+                                                * (
+                                                            is_obj * obj_acc + is_rel * rel_acc + is_attr * attr_acc + is_global * global_acc + is_cat * cat_acc)
+                                        ).sum() / type_acc.numel()
 
         return loss
 
@@ -374,10 +467,11 @@ class QACriterionClevr(nn.Module):
 
         binary_norm = is_binary.sum() if is_binary.any() else 1.0
         loss["loss_answer_binary"] = (
-            F.binary_cross_entropy_with_logits(output["pred_answer_binary"], answers["answer_binary"], reduction="none")
-            .masked_fill(~is_binary, 0)
-            .sum()
-            / binary_norm
+                F.binary_cross_entropy_with_logits(output["pred_answer_binary"], answers["answer_binary"],
+                                                   reduction="none")
+                .masked_fill(~is_binary, 0)
+                .sum()
+                / binary_norm
         )
         bin_acc = (output["pred_answer_binary"].sigmoid() > 0.5) == answers["answer_binary"]
         loss["accuracy_answer_binary"] = (
@@ -386,20 +480,20 @@ class QACriterionClevr(nn.Module):
 
         reg_norm = is_reg.sum() if is_reg.any() else 1.0
         loss["loss_answer_reg"] = (
-            F.cross_entropy(output["pred_answer_reg"], answers["answer_reg"], reduction="none")
-            .masked_fill(~is_reg, 0)
-            .sum()
-            / reg_norm
+                F.cross_entropy(output["pred_answer_reg"], answers["answer_reg"], reduction="none")
+                .masked_fill(~is_reg, 0)
+                .sum()
+                / reg_norm
         )
         reg_acc = (output["pred_answer_reg"].argmax(-1)) == answers["answer_reg"]
         loss["accuracy_answer_reg"] = reg_acc[is_reg].sum() / is_reg.sum() if is_reg.any() else torch.as_tensor(1.0)
 
         attr_norm = is_attr.sum() if is_attr.any() else 1.0
         loss["loss_answer_attr"] = (
-            F.cross_entropy(output["pred_answer_attr"], answers["answer_attr"], reduction="none")
-            .masked_fill(~is_attr, 0)
-            .sum()
-            / attr_norm
+                F.cross_entropy(output["pred_answer_attr"], answers["answer_attr"], reduction="none")
+                .masked_fill(~is_attr, 0)
+                .sum()
+                / attr_norm
         )
         attr_acc = (output["pred_answer_attr"].argmax(-1)) == answers["answer_attr"]
         loss["accuracy_answer_attr"] = (
@@ -407,8 +501,8 @@ class QACriterionClevr(nn.Module):
         )
 
         loss["accuracy_answer_total"] = (
-            type_acc * (is_binary * bin_acc + is_reg * reg_acc + is_attr * attr_acc)
-        ).sum() / type_acc.numel()
+                                                type_acc * (is_binary * bin_acc + is_reg * reg_acc + is_attr * attr_acc)
+                                        ).sum() / type_acc.numel()
 
         return loss
 
@@ -420,7 +514,7 @@ class SetCriterion(nn.Module):
         2) we supervise each pair of matched ground-truth / prediction (supervise class and box)
     """
 
-    def __init__(self, num_classes, matcher, eos_coef, losses, temperature):
+    def __init__(self, num_classes, matcher, eos_coef, losses, temperature, focal_alpha=0.25):
         """Create the criterion.
         Parameters:
             num_classes: number of object categories, omitting the special no-object category
@@ -437,6 +531,7 @@ class SetCriterion(nn.Module):
         empty_weight = torch.ones(self.num_classes + 1)
         empty_weight[-1] = self.eos_coef
         self.register_buffer("empty_weight", empty_weight)
+        self.focal_alpha = focal_alpha
 
     def loss_isfinal(self, outputs, targets, positive_map, indices, num_boxes):
         """This loss is used in some referring expression dataset (specifically Clevr-REF+)
@@ -718,25 +813,26 @@ def build(args):
     qa_dataset = None
     if args.do_qa:
         assert not (
-            ("clevr" in args.combine_datasets or "clevr_question" in args.combine_datasets)
-            and "gqa" in args.combine_datasets
+                ("clevr" in args.combine_datasets or "clevr_question" in args.combine_datasets)
+                and "gqa" in args.combine_datasets
         ), "training GQA and CLEVR simultaneously is not supported"
         assert (
-            "clevr_question" in args.combine_datasets
-            or "clevr" in args.combine_datasets
-            or "gqa" in args.combine_datasets
+                "clevr_question" in args.combine_datasets
+                or "clevr" in args.combine_datasets
+                or "gqa" in args.combine_datasets
         ), "Question answering require either gqa or clevr dataset"
         qa_dataset = "gqa" if "gqa" in args.combine_datasets else "clevr"
 
     backbone = build_backbone(args)
 
-    transformer = build_transformer(args)
+    transformer = build_deforamble_transformer(args)
 
     model = MDETR(
         backbone,
         transformer,
         num_classes=num_classes,
         num_queries=args.num_queries,
+        num_feature_levels=args.num_feature_levels,
         aux_loss=args.aux_loss,
         contrastive_hdim=args.contrastive_loss_hdim,
         contrastive_loss=args.contrastive_loss,
