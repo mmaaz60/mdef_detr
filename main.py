@@ -104,7 +104,7 @@ def get_args_parser():
         type=str,
         choices=("step", "multistep", "linear_with_warmup", "all_linear_with_warmup"),
     )
-    parser.add_argument("--no_ema", dest="ema", action="store_false")
+    parser.add_argument("--ema", dest="ema", action="store_true")
     parser.add_argument("--ema_decay", type=float, default=0.9998)
     parser.add_argument("--fraction_warmup_steps", default=0.01, type=float, help="Fraction of total number of steps")
 
