@@ -40,13 +40,13 @@ The config file for pretraining is configs/pretrain.json and looks like:
 * Download COCO images [Coco train2014](http://images.cocodataset.org/zips/train2014.zip). Update the `coco_path` to the folder containing the downloaded images.
 * Download pre-processed annotations that are converted to coco format (all datasets present in the same zip folder for MDETR annotations): [Pre-processed annotations](https://zenodo.org/record/4729015/files/mdetr_annotations.tar.gz?download=1) and update the `flickr_ann_path`, `gqa_ann_path` and `refexp_ann_path` to this folder with pre-processed annotations.
 
-##### Alternatively, you can download the preprocessed data from [link]() as a single zip file and extract it under 'data' directory. 
+##### Alternatively, you can download the preprocessed data from [link](https://drive.google.com/drive/folders/1-3kAsyZIVFbNelRXrF93Y5tMgOypv2jV?usp=sharing) as a single zip file and extract it under 'data' directory. 
 
 ## Script to run training
 
 This command will reproduce the training of the resnet 101.
 ```
-python run_with_submitit.py --dataset_config configs/pretrain.json  --ngpus 8 --nodes 4 --ema
+python run_with_submitit.py --dataset_config configs/pretrain.json  --ngpus 8 --nodes 4 --ema --epochs 20 --lr_drop 16
 ```
 
 ## Citation 
