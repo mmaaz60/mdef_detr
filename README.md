@@ -41,7 +41,7 @@ The config file for pretraining is configs/pretrain.json and looks like:
 * Download COCO images [Coco train2014](http://images.cocodataset.org/zips/train2014.zip). Update the `coco_path` to the folder containing the downloaded images.
 * Download pre-processed annotations that are converted to coco format (all datasets present in the same zip folder for MDETR annotations): [Pre-processed annotations](https://zenodo.org/record/4729015/files/mdetr_annotations.tar.gz?download=1) and update the `flickr_ann_path`, `gqa_ann_path` and `refexp_ann_path` to this folder with pre-processed annotations.
 
-##### Alternatively, you can download the preprocessed data from [link](https://drive.google.com/drive/folders/1-3kAsyZIVFbNelRXrF93Y5tMgOypv2jV?usp=sharing) as a single zip file and extract it under 'data' directory. 
+### Alternatively, you can download the preprocessed data from [the link](https://drive.google.com/drive/folders/1-3kAsyZIVFbNelRXrF93Y5tMgOypv2jV?usp=sharing) as a single zip file and extract it under `data` directory. 
 
 ## Script to run training
 
