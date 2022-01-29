@@ -1,4 +1,4 @@
-# Copyright (c) Aishwarya Kamath & Nicolas Carion. Licensed under the Apache License 2.0. All Rights Reserved
+# The file is modified from https://github.com/ashkamath/mdetr.
 import torch
 
 from models.backbone import Backbone, Joiner, TimmBackbone, SwinBackbone
