@@ -4,9 +4,9 @@
     "coco_path": "data/coco",
     "vg_img_path": "data/GQA/images",
     "flickr_img_path": "data/fliker_30k",
-    "refexp_ann_path": "data/OpenSource_Filter_Simple_ORE",
-    "flickr_ann_path": "data/OpenSource_Filter_Simple_ORE",
-    "gqa_ann_path": "data/OpenSource_Filter_Simple_ORE",
+    "refexp_ann_path": "data/OpenSource",
+    "flickr_ann_path": "data/OpenSource",
+    "gqa_ann_path": "data/OpenSource",
     "refexp_dataset_name": "all",
     "GT_type": "separate",
     "flickr_dataset_path": "data/fliker_30k/flickr30k_entities/Annotations"
